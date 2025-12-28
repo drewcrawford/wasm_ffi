@@ -61,7 +61,7 @@ pub struct Closure {
     pub mutable: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum VectorKind {
     I8,
     U8,
@@ -84,6 +84,69 @@ impl Descriptor {
         let descriptor = Descriptor::_decode(&mut data, false);
         assert!(data.is_empty(), "remaining data {data:?}");
         descriptor
+    }
+
+    /// Returns a deterministic sort key for this descriptor.
+    ///
+    /// Unlike Debug, this excludes platform-specific indices like `dtor_idx`
+    /// and `shim_idx` that vary between platforms.
+    pub fn sort_key(&self) -> String {
+        match self {
+            Descriptor::I8 => "I8".to_string(),
+            Descriptor::U8 => "U8".to_string(),
+            Descriptor::ClampedU8 => "ClampedU8".to_string(),
+            Descriptor::I16 => "I16".to_string(),
+            Descriptor::U16 => "U16".to_string(),
+            Descriptor::I32 => "I32".to_string(),
+            Descriptor::U32 => "U32".to_string(),
+            Descriptor::I64 => "I64".to_string(),
+            Descriptor::U64 => "U64".to_string(),
+            Descriptor::I128 => "I128".to_string(),
+            Descriptor::U128 => "U128".to_string(),
+            Descriptor::F32 => "F32".to_string(),
+            Descriptor::F64 => "F64".to_string(),
+            Descriptor::Boolean => "Boolean".to_string(),
+            Descriptor::Function(f) => f.sort_key(),
+            Descriptor::Closure(c) => c.sort_key(),
+            Descriptor::Ref(d) => {
+                let inner = d.sort_key();
+                format!("Ref({inner})")
+            }
+            Descriptor::RefMut(d) => {
+                let inner = d.sort_key();
+                format!("RefMut({inner})")
+            }
+            Descriptor::Slice(d) => {
+                let inner = d.sort_key();
+                format!("Slice({inner})")
+            }
+            Descriptor::Vector(d) => {
+                let inner = d.sort_key();
+                format!("Vector({inner})")
+            }
+            Descriptor::CachedString => "CachedString".to_string(),
+            Descriptor::String => "String".to_string(),
+            Descriptor::Externref => "Externref".to_string(),
+            Descriptor::NamedExternref(name) => format!("NamedExternref({name})"),
+            Descriptor::Enum { name, hole } => format!("Enum({name}, {hole})"),
+            Descriptor::StringEnum {
+                name,
+                invalid,
+                hole,
+            } => format!("StringEnum({name}, {invalid}, {hole})"),
+            Descriptor::RustStruct(name) => format!("RustStruct({name})"),
+            Descriptor::Char => "Char".to_string(),
+            Descriptor::Option(d) => {
+                let inner = d.sort_key();
+                format!("Option({inner})")
+            }
+            Descriptor::Result(d) => {
+                let inner = d.sort_key();
+                format!("Result({inner})")
+            }
+            Descriptor::Unit => "Unit".to_string(),
+            Descriptor::NonNull => "NonNull".to_string(),
+        }
     }
 
     fn _decode(data: &mut &[u32], clamped: bool) -> Descriptor {
@@ -223,6 +286,13 @@ impl Closure {
             function: Function::decode(data),
         }
     }
+
+    /// Returns a deterministic sort key, excluding `dtor_idx`.
+    pub fn sort_key(&self) -> String {
+        let mutable = self.mutable;
+        let function = self.function.sort_key();
+        format!("Closure(mutable={mutable}, {function})")
+    }
 }
 
 impl Function {
@@ -237,6 +307,19 @@ impl Function {
             ret: Descriptor::_decode(data, false),
             inner_ret: Some(Descriptor::_decode(data, false)),
         }
+    }
+
+    /// Returns a deterministic sort key, excluding `shim_idx`.
+    pub fn sort_key(&self) -> String {
+        let args: Vec<_> = self.arguments.iter().map(|a| a.sort_key()).collect();
+        let args = args.join(", ");
+        let ret = self.ret.sort_key();
+        let inner_ret = self
+            .inner_ret
+            .as_ref()
+            .map(|r| r.sort_key())
+            .unwrap_or_default();
+        format!("Function([{args}] -> {ret}, inner={inner_ret})")
     }
 }
 

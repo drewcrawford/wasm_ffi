@@ -4585,7 +4585,7 @@ fn iter_adapter<'a>(
 
     // Sort adapters by kind first (imports, exports, adapters), then by name within each kind
     // to ensure deterministic ordering of generated code.
-    adapters.sort_by(|(_, _, a), (_, _, b)| {
+    adapters.sort_by(|(id_a, _, a), (id_b, _, b)| {
         fn get_kind_order(kind: &ContextAdapterKind) -> u8 {
             match kind {
                 ContextAdapterKind::Import(_) => 0,
@@ -4604,6 +4604,26 @@ fn iter_adapter<'a>(
                 // Sort exports by debug_name to ensure deterministic identifier generation
                 // when multiple exports have the same JS name (e.g., due to js_name attribute).
                 a.debug_name.cmp(&b.debug_name)
+            }
+            (ContextAdapterKind::Adapter, ContextAdapterKind::Adapter) => {
+                // Sort local adapters (closures) by their signature for deterministic ordering.
+                // We also can't use export names because they contain platform-specific hashes.
+                // The signature (params, results, inner_results) is the same across all platforms.
+                // When signatures are equal, use AdapterId as a tie-breaker to ensure
+                // a stable sort order within this compilation.
+                let adapter_a = wit.adapters.get(id_a).unwrap();
+                let adapter_b = wit.adapters.get(id_b).unwrap();
+                (
+                    &adapter_a.params,
+                    &adapter_a.results,
+                    &adapter_a.inner_results,
+                )
+                    .cmp(&(
+                        &adapter_b.params,
+                        &adapter_b.results,
+                        &adapter_b.inner_results,
+                    ))
+                    .then_with(|| id_a.cmp(id_b))
             }
             _ => get_kind_order(a).cmp(&get_kind_order(b)),
         }
