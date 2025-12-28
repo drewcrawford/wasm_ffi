@@ -618,29 +618,70 @@ fn unexported_unused_lld_things(module: &mut Module) {
     }
 }
 
-/// Sort exports by name to ensure deterministic output.
+/// Sort exports to ensure deterministic output.
 ///
 /// Exports may be added in non-deterministic order due to HashMap iteration
 /// during processing (e.g., closure exports). This function collects all exports,
-/// sorts them by name, deletes them all, and re-adds them in sorted order.
+/// sorts them by function signature (params then results) to group similar
+/// functions together, then by name. This ensures deterministic output
+/// across different platforms.
 fn sort_exports(module: &mut Module) {
+    use walrus::ExportItem;
+    use walrus::ValType;
+
+    // Convert ValType to a sortable representation
+    fn val_type_order(v: &ValType) -> u8 {
+        match v {
+            ValType::I32 => 0,
+            ValType::I64 => 1,
+            ValType::F32 => 2,
+            ValType::F64 => 3,
+            ValType::V128 => 4,
+            ValType::Ref(_) => 5, // All reference types grouped together
+        }
+    }
+
+    // Get a sortable signature key for a function export
+    let get_signature_key =
+        |item: &ExportItem| -> (Vec<u8>, Vec<u8>, u8) {
+            match item {
+                ExportItem::Function(func_id) => {
+                    let func = module.funcs.get(*func_id);
+                    let ty = module.types.get(func.ty());
+                    let params: Vec<u8> = ty.params().iter().map(val_type_order).collect();
+                    let results: Vec<u8> = ty.results().iter().map(val_type_order).collect();
+                    (params, results, 0) // Functions sort first
+                }
+                ExportItem::Table(_) => (vec![], vec![], 1),
+                ExportItem::Memory(_) => (vec![], vec![], 2),
+                ExportItem::Global(_) => (vec![], vec![], 3),
+                ExportItem::Tag(_) => (vec![], vec![], 4),
+            }
+        };
+
     // Collect all exports with their info
     let mut exports: Vec<_> = module
         .exports
         .iter()
-        .map(|e| (e.id(), e.name.clone(), e.item))
+        .map(|e| {
+            let sig_key = get_signature_key(&e.item);
+            (e.id(), e.name.clone(), e.item, sig_key)
+        })
         .collect();
 
-    // Sort by name
-    exports.sort_by(|a, b| a.1.cmp(&b.1));
+    // Sort by: (1) signature key (groups same-signature functions), (2) name
+    exports.sort_by(|a, b| {
+        a.3.cmp(&b.3) // Sort by signature key first
+            .then_with(|| a.1.cmp(&b.1)) // Then by name
+    });
 
     // Delete all exports
-    for (id, _, _) in &exports {
+    for (id, _, _, _) in &exports {
         module.exports.delete(*id);
     }
 
     // Re-add in sorted order
-    for (_, name, item) in exports {
+    for (_, name, item, _) in exports {
         module.exports.add(&name, item);
     }
 }
