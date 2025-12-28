@@ -618,6 +618,33 @@ fn unexported_unused_lld_things(module: &mut Module) {
     }
 }
 
+/// Sort exports by name to ensure deterministic output.
+///
+/// Exports may be added in non-deterministic order due to HashMap iteration
+/// during processing (e.g., closure exports). This function collects all exports,
+/// sorts them by name, deletes them all, and re-adds them in sorted order.
+fn sort_exports(module: &mut Module) {
+    // Collect all exports with their info
+    let mut exports: Vec<_> = module
+        .exports
+        .iter()
+        .map(|e| (e.id(), e.name.clone(), e.item))
+        .collect();
+
+    // Sort by name
+    exports.sort_by(|a, b| a.1.cmp(&b.1));
+
+    // Delete all exports
+    for (id, _, _) in &exports {
+        module.exports.delete(*id);
+    }
+
+    // Re-add in sorted order
+    for (_, name, item) in exports {
+        module.exports.add(&name, item);
+    }
+}
+
 impl Output {
     pub fn js(&self) -> &str {
         &self.generated.js
@@ -663,6 +690,12 @@ impl Output {
         let wasm_name = format!("{}_bg", self.stem);
         let wasm_path = out_dir.join(&wasm_name).with_extension("wasm");
         fs::create_dir_all(out_dir)?;
+
+        // Sort exports by name to ensure deterministic output order.
+        // This is necessary because exports may be added in non-deterministic order
+        // due to HashMap iteration order during processing.
+        sort_exports(&mut self.module);
+
         let wasm_bytes = self.module.emit_wasm();
         fs::write(&wasm_path, wasm_bytes)
             .with_context(|| format!("failed to write `{}`", wasm_path.display()))?;
