@@ -117,8 +117,16 @@ impl Sanitizer {
         if env::var("BLESS").is_ok() {
             fs::write(expected, output.as_bytes())?;
         } else {
-            let expected = fs::read_to_string(expected)?;
-            pretty_assertions::assert_str_eq!(expected, output);
+            let expected_content = fs::read_to_string(expected)?;
+            if expected_content != output {
+                // Log both sides for debugging nondeterminism
+                eprintln!("=== EXPECTED ({}) ===", expected.display());
+                eprintln!("{}", expected_content);
+                eprintln!("=== ACTUAL ===");
+                eprintln!("{}", output);
+                eprintln!("=== END ===");
+            }
+            pretty_assertions::assert_str_eq!(expected_content, output);
         }
         Ok(())
     }
