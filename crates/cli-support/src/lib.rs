@@ -642,22 +642,21 @@ fn sort_exports(module: &mut Module) {
     }
 
     // Get a sortable signature key for a function export
-    let get_signature_key =
-        |item: &ExportItem| -> (Vec<u8>, Vec<u8>, u8) {
-            match item {
-                ExportItem::Function(func_id) => {
-                    let func = module.funcs.get(*func_id);
-                    let ty = module.types.get(func.ty());
-                    let params: Vec<u8> = ty.params().iter().map(val_type_order).collect();
-                    let results: Vec<u8> = ty.results().iter().map(val_type_order).collect();
-                    (params, results, 0) // Functions sort first
-                }
-                ExportItem::Table(_) => (vec![], vec![], 1),
-                ExportItem::Memory(_) => (vec![], vec![], 2),
-                ExportItem::Global(_) => (vec![], vec![], 3),
-                ExportItem::Tag(_) => (vec![], vec![], 4),
+    let get_signature_key = |item: &ExportItem| -> (Vec<u8>, Vec<u8>, u8) {
+        match item {
+            ExportItem::Function(func_id) => {
+                let func = module.funcs.get(*func_id);
+                let ty = module.types.get(func.ty());
+                let params: Vec<u8> = ty.params().iter().map(val_type_order).collect();
+                let results: Vec<u8> = ty.results().iter().map(val_type_order).collect();
+                (params, results, 0) // Functions sort first
             }
-        };
+            ExportItem::Table(_) => (vec![], vec![], 1),
+            ExportItem::Memory(_) => (vec![], vec![], 2),
+            ExportItem::Global(_) => (vec![], vec![], 3),
+            ExportItem::Tag(_) => (vec![], vec![], 4),
+        }
+    };
 
     // Collect all exports with their info
     let mut exports: Vec<_> = module

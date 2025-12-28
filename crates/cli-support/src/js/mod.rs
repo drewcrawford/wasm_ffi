@@ -4603,9 +4603,8 @@ fn iter_adapter<'a>(
             (ContextAdapterKind::Export(export_a), ContextAdapterKind::Export(export_b)) => {
                 // Check if these are closure exports (have platform-specific hashes in names).
                 // Closure exports contain patterns like "closures::_::invoke" or "closure::destroy".
-                let is_closure_export = |name: &str| {
-                    name.contains("closures") || name.contains("closure")
-                };
+                let is_closure_export =
+                    |name: &str| name.contains("closures") || name.contains("closure");
                 let a_is_closure = is_closure_export(&export_a.debug_name);
                 let b_is_closure = is_closure_export(&export_b.debug_name);
 
