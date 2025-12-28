@@ -4601,30 +4601,49 @@ fn iter_adapter<'a>(
                 a.name.cmp(&b.name)
             }
             (ContextAdapterKind::Export(export_a), ContextAdapterKind::Export(export_b)) => {
-                // Sort exports by their adapter signature first to ensure deterministic ordering
-                // even when debug_names contain platform-specific hashes (e.g., closure exports).
-                // Fall back to debug_name for exports with the same signature.
-                let adapter_a = wit.adapters.get(id_a).unwrap();
-                let adapter_b = wit.adapters.get(id_b).unwrap();
-
-                // Get instruction counts for tie-breaking
-                let instr_count = |adapter: &Adapter| match &adapter.kind {
-                    AdapterKind::Local { instructions } => instructions.len(),
-                    AdapterKind::Import { .. } => 0,
+                // Check if these are closure exports (have platform-specific hashes in names).
+                // Closure exports contain patterns like "closures::_::invoke" or "closure::destroy".
+                let is_closure_export = |name: &str| {
+                    name.contains("closures") || name.contains("closure")
                 };
+                let a_is_closure = is_closure_export(&export_a.debug_name);
+                let b_is_closure = is_closure_export(&export_b.debug_name);
 
-                (
-                    &adapter_a.params,
-                    &adapter_a.results,
-                    &adapter_a.inner_results,
-                )
-                    .cmp(&(
-                        &adapter_b.params,
-                        &adapter_b.results,
-                        &adapter_b.inner_results,
-                    ))
-                    .then_with(|| instr_count(adapter_a).cmp(&instr_count(adapter_b)))
-                    .then_with(|| export_a.debug_name.cmp(&export_b.debug_name))
+                // For closure exports, sort by adapter signature to ensure deterministic ordering
+                // even when debug_names contain platform-specific hashes.
+                // For regular exports, sort by debug_name for human-readable ordering.
+                if a_is_closure && b_is_closure {
+                    let adapter_a = wit.adapters.get(id_a).unwrap();
+                    let adapter_b = wit.adapters.get(id_b).unwrap();
+
+                    // Get instruction counts for tie-breaking
+                    let instr_count = |adapter: &Adapter| match &adapter.kind {
+                        AdapterKind::Local { instructions } => instructions.len(),
+                        AdapterKind::Import { .. } => 0,
+                    };
+
+                    (
+                        &adapter_a.params,
+                        &adapter_a.results,
+                        &adapter_a.inner_results,
+                    )
+                        .cmp(&(
+                            &adapter_b.params,
+                            &adapter_b.results,
+                            &adapter_b.inner_results,
+                        ))
+                        .then_with(|| instr_count(adapter_a).cmp(&instr_count(adapter_b)))
+                        .then_with(|| export_a.debug_name.cmp(&export_b.debug_name))
+                } else if a_is_closure {
+                    // Closures sort after regular exports
+                    std::cmp::Ordering::Greater
+                } else if b_is_closure {
+                    // Regular exports sort before closures
+                    std::cmp::Ordering::Less
+                } else {
+                    // Regular exports sort by debug_name
+                    export_a.debug_name.cmp(&export_b.debug_name)
+                }
             }
             (ContextAdapterKind::Adapter, ContextAdapterKind::Adapter) => {
                 // Sort local adapters (closures) by their signature for deterministic ordering.
