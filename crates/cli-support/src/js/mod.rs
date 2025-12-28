@@ -4609,10 +4609,17 @@ fn iter_adapter<'a>(
                 // Sort local adapters (closures) by their signature for deterministic ordering.
                 // We also can't use export names because they contain platform-specific hashes.
                 // The signature (params, results, inner_results) is the same across all platforms.
-                // When signatures are equal, use AdapterId as a tie-breaker to ensure
-                // a stable sort order within this compilation.
+                // When signatures are equal, use instruction count as a secondary sort key,
+                // as different closures typically have different instruction sequences.
                 let adapter_a = wit.adapters.get(id_a).unwrap();
                 let adapter_b = wit.adapters.get(id_b).unwrap();
+
+                // Get instruction counts for tie-breaking
+                let instr_count = |adapter: &Adapter| match &adapter.kind {
+                    AdapterKind::Local { instructions } => instructions.len(),
+                    AdapterKind::Import { .. } => 0,
+                };
+
                 (
                     &adapter_a.params,
                     &adapter_a.results,
@@ -4623,7 +4630,7 @@ fn iter_adapter<'a>(
                         &adapter_b.results,
                         &adapter_b.inner_results,
                     ))
-                    .then_with(|| id_a.cmp(id_b))
+                    .then_with(|| instr_count(adapter_a).cmp(&instr_count(adapter_b)))
             }
             _ => get_kind_order(a).cmp(&get_kind_order(b)),
         }
