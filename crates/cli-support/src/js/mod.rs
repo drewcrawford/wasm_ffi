@@ -4600,10 +4600,31 @@ fn iter_adapter<'a>(
                 let b = module.imports.get(*b);
                 a.name.cmp(&b.name)
             }
-            (ContextAdapterKind::Export(a), ContextAdapterKind::Export(b)) => {
-                // Sort exports by debug_name to ensure deterministic identifier generation
-                // when multiple exports have the same JS name (e.g., due to js_name attribute).
-                a.debug_name.cmp(&b.debug_name)
+            (ContextAdapterKind::Export(export_a), ContextAdapterKind::Export(export_b)) => {
+                // Sort exports by their adapter signature first to ensure deterministic ordering
+                // even when debug_names contain platform-specific hashes (e.g., closure exports).
+                // Fall back to debug_name for exports with the same signature.
+                let adapter_a = wit.adapters.get(id_a).unwrap();
+                let adapter_b = wit.adapters.get(id_b).unwrap();
+
+                // Get instruction counts for tie-breaking
+                let instr_count = |adapter: &Adapter| match &adapter.kind {
+                    AdapterKind::Local { instructions } => instructions.len(),
+                    AdapterKind::Import { .. } => 0,
+                };
+
+                (
+                    &adapter_a.params,
+                    &adapter_a.results,
+                    &adapter_a.inner_results,
+                )
+                    .cmp(&(
+                        &adapter_b.params,
+                        &adapter_b.results,
+                        &adapter_b.inner_results,
+                    ))
+                    .then_with(|| instr_count(adapter_a).cmp(&instr_count(adapter_b)))
+                    .then_with(|| export_a.debug_name.cmp(&export_b.debug_name))
             }
             (ContextAdapterKind::Adapter, ContextAdapterKind::Adapter) => {
                 // Sort local adapters (closures) by their signature for deterministic ordering.
