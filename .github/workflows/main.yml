@@ -226,6 +226,28 @@ jobs:
     - run: cargo test -p wasm-bindgen-shared
     - run: cargo test -p wasm-bindgen-test-shared
 
+  bench_wasm:
+    strategy:
+      matrix:
+        runs:
+          - name: "node"
+            run: cargo bench --target wasm32-unknown-unknown
+          - name: "browser"
+            run: cargo bench --target wasm32-unknown-unknown -p wasm-bindgen-test
+    name: "Run wasm benchmarks (${{ matrix.runs.name }})"
+    runs-on: ubuntu-latest
+    env:
+      WASM_BINDGEN_TEST_TIMEOUT: 500
+    steps:
+    - uses: actions/checkout@v6
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: actions/setup-node@v6
+      with:
+        node-version: '20'
+    - run: ${{ matrix.runs.run }}
+
   test_with_geckodriver:
     strategy:
       matrix:
