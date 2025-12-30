@@ -215,7 +215,7 @@ pub(crate) fn spawn(
             // Now that we've gotten to the point where JS is executing, update our
             // status text as at this point we should be asynchronously fetching the
             // Wasm module.
-            document.getElementById('output').textContent = "Loading Wasm module...";
+            document.getElementById('output').textContent = "Loading Wasm module...\n";
             {}
 
             port.addEventListener("message", function(e) {{
@@ -242,10 +242,6 @@ pub(crate) fn spawn(
                         }}
                     }} else if (method == "output_append") {{
                         const el = document.getElementById("output");
-                        if (!el.dataset.appended) {{
-                            el.textContent = "";
-                            el.dataset.appended = "1";
-                        }}
                         el.textContent += args[0];
                     }}
                 }}
@@ -326,7 +322,7 @@ pub(crate) fn spawn(
             // Now that we've gotten to the point where JS is executing, update our
             // status text as at this point we should be asynchronously fetching the
             // Wasm module.
-            document.getElementById('output').textContent = "Loading Wasm module...";
+            document.getElementById('output').textContent = "Loading Wasm module...\n";
 
             async function main(test) {{
                 const wasm = await init('./{module}_bg.wasm');
