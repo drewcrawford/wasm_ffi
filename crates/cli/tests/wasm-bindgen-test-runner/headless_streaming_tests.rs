@@ -1702,8 +1702,14 @@ features = ["Blob", "BlobPropertyBag", "Url", "Worker", "WorkerOptions", "Worker
                 use js_sys::Array;
                 use web_sys::{Blob, BlobPropertyBag, Url, Worker, WorkerOptions, WorkerType};
 
-                // Create a module worker script that logs a marker
-                let script = r#"console.log("MODULE_WORKER_LOG_MARKER_4M8N3");"#;
+                // Create a module worker script that logs all 5 console levels
+                let script = r#"
+                    console.debug("MODULE_WORKER_DEBUG_MARKER_4M8N3");
+                    console.log("MODULE_WORKER_LOG_MARKER_4M8N3");
+                    console.info("MODULE_WORKER_INFO_MARKER_4M8N3");
+                    console.warn("MODULE_WORKER_WARN_MARKER_4M8N3");
+                    console.error("MODULE_WORKER_ERROR_MARKER_4M8N3");
+                "#;
                 let arr = Array::new();
                 arr.push(&JsValue::from_str(script));
                 let opts = BlobPropertyBag::new();
@@ -1759,14 +1765,30 @@ features = ["Blob", "BlobPropertyBag", "Url", "Worker", "WorkerOptions", "Worker
         stderr
     );
 
-    // Check the marker appears exactly once
-    let count = combined.matches("MODULE_WORKER_LOG_MARKER_4M8N3").count();
-    assert_eq!(
-        count, 1,
-        "Expected module worker log marker to appear exactly once, but it appeared {} times.\n\
-         This test verifies that console.log from module workers is captured.\n\
+    // Check all 5 log levels - each should appear exactly once
+    let levels = [
+        ("debug", "MODULE_WORKER_DEBUG_MARKER_4M8N3"),
+        ("log", "MODULE_WORKER_LOG_MARKER_4M8N3"),
+        ("info", "MODULE_WORKER_INFO_MARKER_4M8N3"),
+        ("warn", "MODULE_WORKER_WARN_MARKER_4M8N3"),
+        ("error", "MODULE_WORKER_ERROR_MARKER_4M8N3"),
+    ];
+
+    let mut failures = Vec::new();
+    for (level, marker) in &levels {
+        let count = combined.matches(*marker).count();
+        if count != 1 {
+            failures.push(format!("console.{}: expected 1, got {}", level, count));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Some console log levels were not captured correctly:\n{}\n\
          stdout:\n{}\nstderr:\n{}",
-        count, stdout, stderr
+        failures.join("\n"),
+        stdout,
+        stderr
     );
 }
 
@@ -1799,7 +1821,13 @@ features = ["Blob", "BlobPropertyBag", "Url", "Worker", "Window"]
     // Create a worker JS file that will be served by the test server
     project.file(
         "worker_script.js",
-        r#"console.log("URL_WORKER_LOG_MARKER_9K2P7");"#,
+        r#"
+console.debug("URL_WORKER_DEBUG_MARKER_9K2P7");
+console.log("URL_WORKER_LOG_MARKER_9K2P7");
+console.info("URL_WORKER_INFO_MARKER_9K2P7");
+console.warn("URL_WORKER_WARN_MARKER_9K2P7");
+console.error("URL_WORKER_ERROR_MARKER_9K2P7");
+"#,
     );
 
     project.file(
@@ -1859,14 +1887,30 @@ features = ["Blob", "BlobPropertyBag", "Url", "Worker", "Window"]
         stderr
     );
 
-    // Check the marker appears exactly once
-    let count = combined.matches("URL_WORKER_LOG_MARKER_9K2P7").count();
-    assert_eq!(
-        count, 1,
-        "Expected URL worker log marker to appear exactly once, but it appeared {} times.\n\
-         This test verifies that console.log from URL-based workers is captured.\n\
+    // Check all 5 log levels - each should appear exactly once
+    let levels = [
+        ("debug", "URL_WORKER_DEBUG_MARKER_9K2P7"),
+        ("log", "URL_WORKER_LOG_MARKER_9K2P7"),
+        ("info", "URL_WORKER_INFO_MARKER_9K2P7"),
+        ("warn", "URL_WORKER_WARN_MARKER_9K2P7"),
+        ("error", "URL_WORKER_ERROR_MARKER_9K2P7"),
+    ];
+
+    let mut failures = Vec::new();
+    for (level, marker) in &levels {
+        let count = combined.matches(*marker).count();
+        if count != 1 {
+            failures.push(format!("console.{}: expected 1, got {}", level, count));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Some console log levels were not captured correctly:\n{}\n\
          stdout:\n{}\nstderr:\n{}",
-        count, stdout, stderr
+        failures.join("\n"),
+        stdout,
+        stderr
     );
 }
 
@@ -2018,10 +2062,14 @@ features = ["Blob", "BlobPropertyBag", "Url", "SharedWorker", "MessagePort", "Wi
                 use js_sys::Array;
                 use web_sys::{Blob, BlobPropertyBag, Url, SharedWorker};
 
-                // Create a shared worker script that logs a unique marker on connect
+                // Create a shared worker script that logs all 5 console levels on connect
                 let script = r#"
                     onconnect = function(e) {
+                        console.debug("SPAWNED_SHARED_WORKER_DEBUG_MARKER_3M8P1");
                         console.log("SPAWNED_SHARED_WORKER_LOG_MARKER_3M8P1");
+                        console.info("SPAWNED_SHARED_WORKER_INFO_MARKER_3M8P1");
+                        console.warn("SPAWNED_SHARED_WORKER_WARN_MARKER_3M8P1");
+                        console.error("SPAWNED_SHARED_WORKER_ERROR_MARKER_3M8P1");
                         e.ports[0].postMessage("done");
                     };
                 "#;
@@ -2077,17 +2125,30 @@ features = ["Blob", "BlobPropertyBag", "Url", "SharedWorker", "MessagePort", "Wi
         stderr
     );
 
-    // Count occurrences of the marker - should be exactly 1
-    let count = combined
-        .matches("SPAWNED_SHARED_WORKER_LOG_MARKER_3M8P1")
-        .count();
+    // Check all 5 log levels - each should appear exactly once
+    let levels = [
+        ("debug", "SPAWNED_SHARED_WORKER_DEBUG_MARKER_3M8P1"),
+        ("log", "SPAWNED_SHARED_WORKER_LOG_MARKER_3M8P1"),
+        ("info", "SPAWNED_SHARED_WORKER_INFO_MARKER_3M8P1"),
+        ("warn", "SPAWNED_SHARED_WORKER_WARN_MARKER_3M8P1"),
+        ("error", "SPAWNED_SHARED_WORKER_ERROR_MARKER_3M8P1"),
+    ];
 
-    assert_eq!(
-        count, 1,
-        "Expected shared worker log marker to appear exactly once, but it appeared {} times.\n\
-         This test verifies that console.log from user-spawned shared workers is captured.\n\
+    let mut failures = Vec::new();
+    for (level, marker) in &levels {
+        let count = combined.matches(*marker).count();
+        if count != 1 {
+            failures.push(format!("console.{}: expected 1, got {}", level, count));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Some console log levels were not captured correctly:\n{}\n\
          stdout:\n{}\nstderr:\n{}",
-        count, stdout, stderr
+        failures.join("\n"),
+        stdout,
+        stderr
     );
 }
 
@@ -2359,7 +2420,13 @@ import { Worker } from 'worker_threads';
 globalThis.spawnWorkerWithLog = function() {
     return new Promise((resolve, reject) => {
         const worker = new Worker(
-            'console.log("SPAWNED_NODE_WORKER_LOG_MARKER_ESM_8T4R2");',
+            `
+            console.debug("NODE_WORKER_DEBUG_MARKER_ESM_8T4R2");
+            console.log("NODE_WORKER_LOG_MARKER_ESM_8T4R2");
+            console.info("NODE_WORKER_INFO_MARKER_ESM_8T4R2");
+            console.warn("NODE_WORKER_WARN_MARKER_ESM_8T4R2");
+            console.error("NODE_WORKER_ERROR_MARKER_ESM_8T4R2");
+            `,
             { eval: true }
         );
         worker.on('exit', () => resolve());
@@ -2426,16 +2493,29 @@ globalThis.spawnWorkerWithLog = function() {
         stderr
     );
 
-    // Count occurrences of the marker - should be exactly 1
-    let count = combined
-        .matches("SPAWNED_NODE_WORKER_LOG_MARKER_ESM_8T4R2")
-        .count();
+    // Check all 5 log levels - each should appear exactly once
+    let levels = [
+        ("debug", "NODE_WORKER_DEBUG_MARKER_ESM_8T4R2"),
+        ("log", "NODE_WORKER_LOG_MARKER_ESM_8T4R2"),
+        ("info", "NODE_WORKER_INFO_MARKER_ESM_8T4R2"),
+        ("warn", "NODE_WORKER_WARN_MARKER_ESM_8T4R2"),
+        ("error", "NODE_WORKER_ERROR_MARKER_ESM_8T4R2"),
+    ];
 
-    assert_eq!(
-        count, 1,
-        "Expected Node.js ESM worker log marker to appear exactly once, but it appeared {} times.\n\
-         This test verifies that console.log from user-spawned worker_threads is captured.\n\
+    let mut failures = Vec::new();
+    for (level, marker) in &levels {
+        let count = combined.matches(*marker).count();
+        if count != 1 {
+            failures.push(format!("console.{}: expected 1, got {}", level, count));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Some console log levels were not captured correctly:\n{}\n\
          stdout:\n{}\nstderr:\n{}",
-        count, stdout, stderr
+        failures.join("\n"),
+        stdout,
+        stderr
     );
 }
