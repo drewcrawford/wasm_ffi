@@ -1953,8 +1953,14 @@ features = ["Blob", "BlobPropertyBag", "Url", "Worker", "Window"]
                 use js_sys::Array;
                 use web_sys::{Blob, BlobPropertyBag, Url, Worker};
 
-                // Create a worker script that logs a unique marker
-                let script = r#"console.log("SPAWNED_WORKER_FAILURE_TEST_MARKER_8Y3M4");"#;
+                // Create a worker script that logs all 5 console levels
+                let script = r#"
+                    console.debug("SPAWNED_WORKER_FAILURE_DEBUG_MARKER_8Y3M4");
+                    console.log("SPAWNED_WORKER_FAILURE_LOG_MARKER_8Y3M4");
+                    console.info("SPAWNED_WORKER_FAILURE_INFO_MARKER_8Y3M4");
+                    console.warn("SPAWNED_WORKER_FAILURE_WARN_MARKER_8Y3M4");
+                    console.error("SPAWNED_WORKER_FAILURE_ERROR_MARKER_8Y3M4");
+                "#;
                 let arr = Array::new();
                 arr.push(&JsValue::from_str(script));
                 let opts = BlobPropertyBag::new();
@@ -2010,17 +2016,41 @@ features = ["Blob", "BlobPropertyBag", "Url", "Worker", "Window"]
         stderr
     );
 
-    // Count occurrences of the marker - should be exactly 1 in console_log div output
-    let count = combined
-        .matches("SPAWNED_WORKER_FAILURE_TEST_MARKER_8Y3M4")
-        .count();
-
-    assert_eq!(
-        count, 1,
-        "Expected worker log marker to appear exactly once in failure output, but it appeared {} times.\n\
-         This test verifies that console.log from user-spawned workers is shown when tests fail.\n\
+    // Check panic message appears at least once (may appear twice in browser mode:
+    // once in error output and once in console.error div)
+    let panic_msg = "Intentional failure to trigger console log output";
+    let panic_count = combined.matches(panic_msg).count();
+    assert!(
+        panic_count >= 1,
+        "Expected panic message to appear at least once, but it appeared {} times.\n\
          stdout:\n{}\nstderr:\n{}",
-        count, stdout, stderr
+        panic_count, stdout, stderr
+    );
+
+    // Check all 5 log levels - each should appear exactly once
+    let levels = [
+        ("debug", "SPAWNED_WORKER_FAILURE_DEBUG_MARKER_8Y3M4"),
+        ("log", "SPAWNED_WORKER_FAILURE_LOG_MARKER_8Y3M4"),
+        ("info", "SPAWNED_WORKER_FAILURE_INFO_MARKER_8Y3M4"),
+        ("warn", "SPAWNED_WORKER_FAILURE_WARN_MARKER_8Y3M4"),
+        ("error", "SPAWNED_WORKER_FAILURE_ERROR_MARKER_8Y3M4"),
+    ];
+
+    let mut failures = Vec::new();
+    for (level, marker) in &levels {
+        let count = combined.matches(*marker).count();
+        if count != 1 {
+            failures.push(format!("console.{}: expected 1, got {}", level, count));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Some console log levels were not captured correctly:\n{}\n\
+         stdout:\n{}\nstderr:\n{}",
+        failures.join("\n"),
+        stdout,
+        stderr
     );
 }
 
@@ -2190,10 +2220,14 @@ features = ["Blob", "BlobPropertyBag", "Url", "SharedWorker", "MessagePort", "Wi
                 use js_sys::Array;
                 use web_sys::{Blob, BlobPropertyBag, Url, SharedWorker};
 
-                // Create a shared worker script that logs a unique marker on connect
+                // Create a shared worker script that logs all 5 console levels on connect
                 let script = r#"
                     onconnect = function(e) {
-                        console.log("SPAWNED_SHARED_WORKER_FAILURE_MARKER_5K9N2");
+                        console.debug("SPAWNED_SHARED_WORKER_FAILURE_DEBUG_MARKER_5K9N2");
+                        console.log("SPAWNED_SHARED_WORKER_FAILURE_LOG_MARKER_5K9N2");
+                        console.info("SPAWNED_SHARED_WORKER_FAILURE_INFO_MARKER_5K9N2");
+                        console.warn("SPAWNED_SHARED_WORKER_FAILURE_WARN_MARKER_5K9N2");
+                        console.error("SPAWNED_SHARED_WORKER_FAILURE_ERROR_MARKER_5K9N2");
                         e.ports[0].postMessage("done");
                     };
                 "#;
@@ -2253,17 +2287,41 @@ features = ["Blob", "BlobPropertyBag", "Url", "SharedWorker", "MessagePort", "Wi
         stderr
     );
 
-    // Count occurrences of the marker - should be exactly 1 in console_log div output
-    let count = combined
-        .matches("SPAWNED_SHARED_WORKER_FAILURE_MARKER_5K9N2")
-        .count();
-
-    assert_eq!(
-        count, 1,
-        "Expected shared worker log marker to appear exactly once in failure output, but it appeared {} times.\n\
-         This test verifies that console.log from user-spawned shared workers is shown when tests fail.\n\
+    // Check panic message appears at least once (may appear twice in browser mode:
+    // once in error output and once in console.error div)
+    let panic_msg = "Intentional failure to trigger console log output";
+    let panic_count = combined.matches(panic_msg).count();
+    assert!(
+        panic_count >= 1,
+        "Expected panic message to appear at least once, but it appeared {} times.\n\
          stdout:\n{}\nstderr:\n{}",
-        count, stdout, stderr
+        panic_count, stdout, stderr
+    );
+
+    // Check all 5 log levels - each should appear exactly once
+    let levels = [
+        ("debug", "SPAWNED_SHARED_WORKER_FAILURE_DEBUG_MARKER_5K9N2"),
+        ("log", "SPAWNED_SHARED_WORKER_FAILURE_LOG_MARKER_5K9N2"),
+        ("info", "SPAWNED_SHARED_WORKER_FAILURE_INFO_MARKER_5K9N2"),
+        ("warn", "SPAWNED_SHARED_WORKER_FAILURE_WARN_MARKER_5K9N2"),
+        ("error", "SPAWNED_SHARED_WORKER_FAILURE_ERROR_MARKER_5K9N2"),
+    ];
+
+    let mut failures = Vec::new();
+    for (level, marker) in &levels {
+        let count = combined.matches(*marker).count();
+        if count != 1 {
+            failures.push(format!("console.{}: expected 1, got {}", level, count));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Some console log levels were not captured correctly:\n{}\n\
+         stdout:\n{}\nstderr:\n{}",
+        failures.join("\n"),
+        stdout,
+        stderr
     );
 }
 
@@ -2500,6 +2558,265 @@ globalThis.spawnWorkerWithLog = function() {
         ("info", "NODE_WORKER_INFO_MARKER_ESM_8T4R2"),
         ("warn", "NODE_WORKER_WARN_MARKER_ESM_8T4R2"),
         ("error", "NODE_WORKER_ERROR_MARKER_ESM_8T4R2"),
+    ];
+
+    let mut failures = Vec::new();
+    for (level, marker) in &levels {
+        let count = combined.matches(*marker).count();
+        if count != 1 {
+            failures.push(format!("console.{}: expected 1, got {}", level, count));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Some console log levels were not captured correctly:\n{}\n\
+         stdout:\n{}\nstderr:\n{}",
+        failures.join("\n"),
+        stdout,
+        stderr
+    );
+}
+
+/// Test that console.log from a user-spawned worker_thread appears when test fails in Node.js CJS mode.
+#[test]
+fn test_user_spawned_worker_logs_on_failure_node_cjs() {
+    let mut project = Project::new("test_user_spawned_worker_logs_on_failure_node_cjs");
+
+    // Add wasm-bindgen-futures for async support
+    project
+        .deps
+        .push_str("wasm-bindgen-futures = { path = '{root}/crates/futures' }\n");
+
+    // For Node.js, we need to create a JS file that spawns the worker
+    // Test all console log levels
+    project.file(
+        "worker_spawner.cjs",
+        r#"
+const { Worker } = require('worker_threads');
+
+globalThis.spawnWorkerWithLog = function() {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(
+            `
+            console.debug("NODE_WORKER_FAILURE_DEBUG_MARKER_CJS_7N3K1");
+            console.log("NODE_WORKER_FAILURE_LOG_MARKER_CJS_7N3K1");
+            console.info("NODE_WORKER_FAILURE_INFO_MARKER_CJS_7N3K1");
+            console.warn("NODE_WORKER_FAILURE_WARN_MARKER_CJS_7N3K1");
+            console.error("NODE_WORKER_FAILURE_ERROR_MARKER_CJS_7N3K1");
+            `,
+            { eval: true }
+        );
+        worker.on('exit', () => resolve());
+        worker.on('error', reject);
+    });
+};
+"#,
+    );
+
+    project.file(
+        "src/lib.rs",
+        r#"
+            use wasm_bindgen::prelude::*;
+            use wasm_bindgen_test::*;
+
+            #[wasm_bindgen]
+            extern "C" {
+                #[wasm_bindgen(js_name = spawnWorkerWithLog)]
+                async fn spawn_worker_with_log();
+            }
+
+            #[wasm_bindgen_test]
+            async fn test_spawned_worker_logs_then_fails() {
+                spawn_worker_with_log().await;
+                panic!("Intentional failure to trigger console log output");
+            }
+        "#,
+    );
+
+    project.cargo_toml();
+    let runner = REPO_ROOT.join("crates").join("cli").join("Cargo.toml");
+
+    let output = Command::new("cargo")
+        .current_dir(&project.root)
+        .arg("test")
+        .arg("--target")
+        .arg("wasm32-unknown-unknown")
+        .env("CARGO_TARGET_DIR", &*TARGET_DIR)
+        .env(
+            "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER",
+            format!(
+                "cargo run --manifest-path {} --bin wasm-bindgen-test-runner --",
+                runner.display()
+            ),
+        )
+        // Set NODE_ARGS to require our worker spawner before the test
+        .env(
+            "NODE_ARGS",
+            format!("--require={}/worker_spawner.cjs", project.root.display()),
+        )
+        .output()
+        .expect("failed to execute cargo test");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    // The inner test should FAIL (it panics intentionally)
+    assert!(
+        !output.status.success(),
+        "Inner test should fail.\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+
+    // Check panic message appears exactly once
+    let panic_msg = "Intentional failure to trigger console log output";
+    let panic_count = combined.matches(panic_msg).count();
+    assert_eq!(
+        panic_count, 1,
+        "Expected panic message to appear exactly once, but it appeared {} times.\n\
+         stdout:\n{}\nstderr:\n{}",
+        panic_count, stdout, stderr
+    );
+
+    // Check all log levels - each should appear exactly once
+    let levels = [
+        ("debug", "NODE_WORKER_FAILURE_DEBUG_MARKER_CJS_7N3K1"),
+        ("log", "NODE_WORKER_FAILURE_LOG_MARKER_CJS_7N3K1"),
+        ("info", "NODE_WORKER_FAILURE_INFO_MARKER_CJS_7N3K1"),
+        ("warn", "NODE_WORKER_FAILURE_WARN_MARKER_CJS_7N3K1"),
+        ("error", "NODE_WORKER_FAILURE_ERROR_MARKER_CJS_7N3K1"),
+    ];
+
+    let mut failures = Vec::new();
+    for (level, marker) in &levels {
+        let count = combined.matches(*marker).count();
+        if count != 1 {
+            failures.push(format!("console.{}: expected 1, got {}", level, count));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "Some console log levels were not captured correctly:\n{}\n\
+         stdout:\n{}\nstderr:\n{}",
+        failures.join("\n"),
+        stdout,
+        stderr
+    );
+}
+
+/// Test that console.log from a user-spawned worker_thread appears when test fails in Node.js ESM mode.
+#[test]
+fn test_user_spawned_worker_logs_on_failure_node_esm() {
+    let mut project = Project::new("test_user_spawned_worker_logs_on_failure_node_esm");
+
+    // Add wasm-bindgen-futures for async support
+    project
+        .deps
+        .push_str("wasm-bindgen-futures = { path = '{root}/crates/futures' }\n");
+
+    // For Node.js ESM, we need to create a JS module that spawns the worker
+    project.file(
+        "worker_spawner.mjs",
+        r#"
+import { Worker } from 'worker_threads';
+
+globalThis.spawnWorkerWithLog = function() {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(
+            `
+            console.debug("NODE_WORKER_FAILURE_DEBUG_MARKER_ESM_2P8M5");
+            console.log("NODE_WORKER_FAILURE_LOG_MARKER_ESM_2P8M5");
+            console.info("NODE_WORKER_FAILURE_INFO_MARKER_ESM_2P8M5");
+            console.warn("NODE_WORKER_FAILURE_WARN_MARKER_ESM_2P8M5");
+            console.error("NODE_WORKER_FAILURE_ERROR_MARKER_ESM_2P8M5");
+            `,
+            { eval: true }
+        );
+        worker.on('exit', () => resolve());
+        worker.on('error', reject);
+    });
+};
+"#,
+    );
+
+    project.file(
+        "src/lib.rs",
+        r#"
+            use wasm_bindgen::prelude::*;
+            use wasm_bindgen_test::*;
+
+            wasm_bindgen_test_configure!(run_in_node_experimental);
+
+            #[wasm_bindgen]
+            extern "C" {
+                #[wasm_bindgen(js_name = spawnWorkerWithLog)]
+                async fn spawn_worker_with_log();
+            }
+
+            #[wasm_bindgen_test]
+            async fn test_spawned_worker_logs_then_fails() {
+                spawn_worker_with_log().await;
+                panic!("Intentional failure to trigger console log output");
+            }
+        "#,
+    );
+
+    project.cargo_toml();
+    let runner = REPO_ROOT.join("crates").join("cli").join("Cargo.toml");
+
+    let output = Command::new("cargo")
+        .current_dir(&project.root)
+        .arg("test")
+        .arg("--target")
+        .arg("wasm32-unknown-unknown")
+        .env("CARGO_TARGET_DIR", &*TARGET_DIR)
+        .env(
+            "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER",
+            format!(
+                "cargo run --manifest-path {} --bin wasm-bindgen-test-runner --",
+                runner.display()
+            ),
+        )
+        // Set NODE_ARGS to import our worker spawner before the test
+        .env(
+            "NODE_ARGS",
+            format!("--import={}/worker_spawner.mjs", project.root.display()),
+        )
+        .output()
+        .expect("failed to execute cargo test");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    // The inner test should FAIL (it panics intentionally)
+    assert!(
+        !output.status.success(),
+        "Inner test should fail.\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+
+    // Check panic message appears exactly once
+    let panic_msg = "Intentional failure to trigger console log output";
+    let panic_count = combined.matches(panic_msg).count();
+    assert_eq!(
+        panic_count, 1,
+        "Expected panic message to appear exactly once, but it appeared {} times.\n\
+         stdout:\n{}\nstderr:\n{}",
+        panic_count, stdout, stderr
+    );
+
+    // Check all log levels - each should appear exactly once
+    let levels = [
+        ("debug", "NODE_WORKER_FAILURE_DEBUG_MARKER_ESM_2P8M5"),
+        ("log", "NODE_WORKER_FAILURE_LOG_MARKER_ESM_2P8M5"),
+        ("info", "NODE_WORKER_FAILURE_INFO_MARKER_ESM_2P8M5"),
+        ("warn", "NODE_WORKER_FAILURE_WARN_MARKER_ESM_2P8M5"),
+        ("error", "NODE_WORKER_FAILURE_ERROR_MARKER_ESM_2P8M5"),
     ];
 
     let mut failures = Vec::new();

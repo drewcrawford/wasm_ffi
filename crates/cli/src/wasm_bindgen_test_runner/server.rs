@@ -63,20 +63,20 @@ function __wbg_worker_message_handler(e) {{
         const method = e.data[0].slice(10);
         const args = e.data[1];
         if (['debug','log','info','warn','error'].includes(method)) {{
-            // In nocapture mode, also write to the output element (matches main page console behavior)
+            // Always write to the console element for capture
+            const consoleEl = document.getElementById('console');
+            if (consoleEl) {{
+                for (const msg of args) {{
+                    consoleEl.appendChild(document.createTextNode(String(msg) + '\n'));
+                }}
+            }}
+            // In nocapture mode, also write to test_output for real-time display
             if (typeof nocapture !== 'undefined' && nocapture) {{
-                const output = document.getElementById('output');
+                const output = document.getElementById('test_output');
                 if (output) {{
                     for (const msg of args) {{
                         output.appendChild(document.createTextNode(String(msg) + '\n'));
                     }}
-                }}
-            }}
-            // Always write to the console-specific element
-            const el = document.getElementById('console_' + method);
-            if (el) {{
-                for (const msg of args) {{
-                    el.appendChild(document.createTextNode(String(msg) + '\n'));
                 }}
             }}
         }}
@@ -348,7 +348,7 @@ SharedWorker.prototype = __wbg_OriginalSharedWorker.prototype;
             // Now that we've gotten to the point where JS is executing, update our
             // status text as at this point we should be asynchronously fetching the
             // Wasm module.
-            document.getElementById('output').textContent = "Loading Wasm module...\n";
+            document.getElementById('test_output').textContent = "Loading Wasm module...\n";
             {}
 
             port.addEventListener("message", function(e) {{
@@ -374,7 +374,7 @@ SharedWorker.prototype = __wbg_OriginalSharedWorker.prototype;
                             console[method].apply(console, args[0]);
                         }}
                     }} else if (method == "output_append") {{
-                        const el = document.getElementById("output");
+                        const el = document.getElementById("test_output");
                         el.textContent += args[0];
                     }}
                 }}
@@ -399,7 +399,7 @@ SharedWorker.prototype = __wbg_OriginalSharedWorker.prototype;
                             r#"const port = new __wbg_OriginalWorker('worker.js', {{type: '{module}'}});
                             port.onerror = function(e) {{
                                 console.error('Worker error:', e.message, e.filename, e.lineno);
-                                document.getElementById('output').textContent += '\nWorker error: ' + e.message;
+                                document.getElementById('test_output').textContent += '\nWorker error: ' + e.message;
                             }};
                             "#
                         )
@@ -410,7 +410,7 @@ SharedWorker.prototype = __wbg_OriginalSharedWorker.prototype;
                             const worker = new __wbg_OriginalSharedWorker("worker.js?random=" + crypto.randomUUID(), {{type: "{module}"}});
                             worker.onerror = function(e) {{
                                 console.error('Worker error:', e.message, e.filename, e.lineno);
-                                document.getElementById('output').textContent += '\nWorker error: ' + e.message;
+                                document.getElementById('test_output').textContent += '\nWorker error: ' + e.message;
                             }};
                             const port = worker.port;
                             port.start();
@@ -425,7 +425,7 @@ SharedWorker.prototype = __wbg_OriginalSharedWorker.prototype;
                             if (registration.installing) {{
                                 registration.installing.onerror = function(e) {{
                                     console.error('ServiceWorker error:', e.message);
-                                    document.getElementById('output').textContent += '\nServiceWorker error: ' + e.message;
+                                    document.getElementById('test_output').textContent += '\nServiceWorker error: ' + e.message;
                                 }};
                             }}
                             await new Promise((resolve) => {{
@@ -455,7 +455,7 @@ SharedWorker.prototype = __wbg_OriginalSharedWorker.prototype;
             // Now that we've gotten to the point where JS is executing, update our
             // status text as at this point we should be asynchronously fetching the
             // Wasm module.
-            document.getElementById('output').textContent = "Loading Wasm module...\n";
+            document.getElementById('test_output').textContent = "Loading Wasm module...\n";
 
             async function main(test) {{
                 const wasm = await init('./{module}_bg.wasm');

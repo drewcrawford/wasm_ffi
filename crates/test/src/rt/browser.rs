@@ -39,7 +39,7 @@ impl Browser {
     /// Creates a new instance of `Browser`, assuming that its APIs will work
     /// (requires `Node::new()` to have return `None` first).
     pub fn new() -> Browser {
-        let pre = DOCUMENT.with(|document| document.getElementById("output"));
+        let pre = DOCUMENT.with(|document| document.getElementById("test_output"));
         // Append a newline to separate any existing content (e.g., "Loading Wasm module...")
         // from the test output. This matches the worker behavior and allows the headless
         // runner to stream output correctly.
