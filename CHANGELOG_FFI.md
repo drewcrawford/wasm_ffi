@@ -1,3 +1,9 @@
+# worker-logs-capture
+
+Capture console.log/debug/info/warn/error from user-spawned Workers and SharedWorkers in browser tests.
+
+Previously, only console output from the main thread and the test-runner's own worker was captured. Now logs from any worker created by test code are also forwarded to CLI output.
+
 # CI
 
 Remove codspeed CI
