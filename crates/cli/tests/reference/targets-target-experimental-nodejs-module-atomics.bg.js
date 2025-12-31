@@ -1,5 +1,6 @@
 let wasm;
 let wasmModule;
+let __wbg_memory;
 export function __wbg_set_wasm(exports, module) {
     wasm = exports;
     wasmModule = module;
@@ -12,7 +13,7 @@ function getStringFromWasm0(ptr, len) {
 
 let cachedUint8ArrayMemory0 = null;
 function getUint8ArrayMemory0() {
-    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.buffer !== wasm.memory.buffer) {
+    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength !== wasm.memory.buffer.byteLength) {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
@@ -54,4 +55,19 @@ export function __wbindgen_init_externref_table() {
     table.set(offset + 3, false);
 };
 
-export const memory = new WebAssembly.Memory({initial:18,maximum:16384,shared:true});
+export function __wbg_get_imports(customMemory) {
+    __wbg_memory = customMemory !== undefined ? customMemory : new WebAssembly.Memory({initial:18,maximum:16384,shared:true});
+    const imports = {};
+    imports['./reference_test_bg.js'] = {
+        __wbg___wbindgen_throw_dd24417ed36fc46e,
+        __wbg_random_e2b253f0e987bd7c,
+        __wbindgen_init_externref_table,
+        memory: __wbg_memory,
+        __wbg_set_wasm,
+    };
+    return imports;
+}
+
+export function __wbg_get_memory() {
+    return __wbg_memory;
+}

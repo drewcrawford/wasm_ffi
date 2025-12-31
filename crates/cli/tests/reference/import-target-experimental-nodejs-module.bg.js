@@ -1,5 +1,9 @@
 import { default as _default } from 'tests/wasm/import_class.js';
 
+import * as __wbg_star0 from './snippets/import_reftest-a82831e16a4c30f1/inline0.js';
+import * as __wbg_star1 from 'foo-raw';
+import * as __wbg_star2 from 'pure-extern';
+import * as __wbg_star3 from 'tests/wasm/imports.js';
 let wasm;
 let wasmModule;
 export function __wbg_set_wasm(exports, module) {
