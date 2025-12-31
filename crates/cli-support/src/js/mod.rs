@@ -693,9 +693,28 @@ if (require('worker_threads').isMainThread) {
             // and let the bundler/runtime take care of it.
             // With Node we manually read the Wasm file from the filesystem and instantiate it.
             OutputMode::Bundler { .. } | OutputMode::Node { module: true } => {
+                // Track import names for __wbg_get_imports generation (Node ESM with threads)
+                let mut import_names: Vec<(String, bool, String)> = Vec::new(); // (name, is_memory, js_expr)
+
                 for (id, js) in iter_by_import(&self.wasm_import_definitions, self.module) {
+                    // Check if this is the memory import before the mutable borrow
+                    let is_memory = matches!(
+                        self.module.imports.get(*id).kind,
+                        walrus::ImportKind::Memory(_)
+                    );
+
                     let import = self.module.imports.get_mut(*id);
                     import.module = format!("./{module_name}_bg.js");
+                    import_names.push((import.name.clone(), is_memory, js.clone()));
+
+                    // For Node ESM with threads, skip direct memory export - it goes in __wbg_get_imports
+                    if matches!(self.config.mode, OutputMode::Node { module: true })
+                        && is_memory
+                        && self.threads_enabled
+                    {
+                        continue;
+                    }
+
                     if let Some(body) = js.strip_prefix("function") {
                         footer.push_str("\nexport function ");
                         footer.push_str(&import.name);
@@ -729,30 +748,174 @@ __wbg_set_wasm(wasm);"
                     }
 
                     OutputMode::Node { module: true } => {
-                        self.imports_post.push_str(
-                            "\
-                            let wasm;
-                            let wasmModule;
-                            export function __wbg_set_wasm(exports, module) {
-                                wasm = exports;
-                                wasmModule = module;
-                            }\
-                            ",
-                        );
+                        // Find extra modules (snippets, etc.) that need to be imported
+                        let extra_modules: Vec<_> = self
+                            .module
+                            .imports
+                            .iter()
+                            .filter(|i| !self.wasm_import_definitions.contains_key(&i.id()))
+                            .filter(|i| !matches!(i.kind, walrus::ImportKind::Memory(_)))
+                            .map(|i| i.module.clone())
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .collect();
 
+                        // Generate import statements for extra modules in _bg.js
+                        let mut extra_imports = String::new();
+                        for (i, extra) in extra_modules.iter().enumerate() {
+                            extra_imports
+                                .push_str(&format!("import * as __wbg_star{i} from '{extra}';\n"));
+                        }
+
+                        self.imports_post.push_str(&extra_imports);
+                        if self.threads_enabled {
+                            self.imports_post.push_str(
+                                "\
+                                let wasm;
+                                let wasmModule;
+                                let __wbg_memory;
+                                export function __wbg_set_wasm(exports, module) {
+                                    wasm = exports;
+                                    wasmModule = module;
+                                }\
+                                ",
+                            );
+                        } else {
+                            self.imports_post.push_str(
+                                "\
+                                let wasm;
+                                let wasmModule;
+                                export function __wbg_set_wasm(exports, module) {
+                                    wasm = exports;
+                                    wasmModule = module;
+                                }\
+                                ",
+                            );
+                        }
+
+                        // Build __wbg_get_imports function for _bg.js
+                        // This allows workers to get imports with custom memory
+                        let mut get_imports_entries = String::new();
+                        let mut memory_default_expr = String::new();
+                        for (name, is_memory, js_expr) in &import_names {
+                            if *is_memory {
+                                memory_default_expr = js_expr.clone();
+                                get_imports_entries
+                                    .push_str(&format!("        {name}: __wbg_memory,\n"));
+                            } else {
+                                get_imports_entries.push_str(&format!("        {name},\n"));
+                            }
+                        }
+                        get_imports_entries.push_str("        __wbg_set_wasm,\n");
+
+                        // Build extra module entries
+                        let mut extra_imports_init = String::new();
+                        for (i, extra) in extra_modules.iter().enumerate() {
+                            extra_imports_init
+                                .push_str(&format!("    imports['{extra}'] = __wbg_star{i};\n"));
+                        }
+
+                        // Add __wbg_get_imports to _bg.js footer
+                        if self.threads_enabled && !memory_default_expr.is_empty() {
+                            footer.push_str(&format!(
+                                r#"
+export function __wbg_get_imports(customMemory) {{
+    __wbg_memory = customMemory !== undefined ? customMemory : {memory_default_expr};
+    const imports = {{}};
+    imports['./{module_name}_bg.js'] = {{
+{get_imports_entries}    }};
+{extra_imports_init}    return imports;
+}}
+
+export function __wbg_get_memory() {{
+    return __wbg_memory;
+}}
+"#
+                            ));
+                        }
+
+                        // Generate initSync in the MAIN file (via start), not _bg.js
                         let start = start.get_or_insert_with(String::new);
                         start.push_str(&self.generate_node_imports(module_name));
-                        start.push_str(&self.generate_node_wasm_loading(module_name));
 
-                        start.push_str(&format!(
-                            "imports[\"./{module_name}_bg.js\"].__wbg_set_wasm(wasm, wasmModule);"
-                        ));
+                        if self.threads_enabled {
+                            // For threads: generate initSync that accepts custom memory
+                            // Add imports for Node APIs
+                            start.push_str("import { readFileSync } from 'node:fs';\n");
+                            start.push_str("import { isMainThread } from 'node:worker_threads';\n");
+
+                            let stack_size_check = format!(
+                                "if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % {} !== 0)) {{ throw new Error('invalid stack size'); }}",
+                                crate::transforms::threads::PAGE_SIZE,
+                            );
+
+                            let start_call = if needs_manual_start {
+                                format!(
+                                    "\n    {stack_size_check}\n    wasm.__wbindgen_start(thread_stack_size);\n"
+                                )
+                            } else {
+                                String::new()
+                            };
+
+                            start.push_str(&format!(
+                                r#"
+const __bg = imports['./{module_name}_bg.js'];
+let wasm;
+let wasmModule;
+let __initialized = false;
+
+export function initSync(opts = {{}}) {{
+    if (__initialized) return wasm;
+
+    let {{ module, memory, thread_stack_size }} = opts;
+
+    if (module === undefined) {{
+        const wasmUrl = new URL('{module_name}_bg.wasm', import.meta.url);
+        module = readFileSync(wasmUrl);
+    }}
+
+    if (!(module instanceof WebAssembly.Module)) {{
+        wasmModule = new WebAssembly.Module(module);
+    }} else {{
+        wasmModule = module;
+    }}
+
+    const wasmImports = __bg.__wbg_get_imports(memory);
+    const instance = new WebAssembly.Instance(wasmModule, wasmImports);
+    wasm = instance.exports;
+
+    __bg.__wbg_set_wasm(wasm, wasmModule);
+{start_call}
+    __initialized = true;
+    return wasm;
+}}
+
+// Auto-initialize for backwards compatibility (only on main thread)
+// Worker threads should call initSync({{ module, memory }}) explicitly
+if (isMainThread) {{
+    initSync();
+}}
+
+export {{ wasm as __wasm, wasmModule as __wbindgen_wasm_module }};
+"#
+                            ));
+                        } else {
+                            // Non-threaded: use existing simple loading
+                            start.push_str(&self.generate_node_wasm_loading(module_name));
+                            start.push_str(&format!(
+                                "imports[\"./{module_name}_bg.js\"].__wbg_set_wasm(wasm, wasmModule);"
+                            ));
+                        }
                     }
 
                     _ => {}
                 }
 
-                if needs_manual_start {
+                // For Node ESM with threads, __wbindgen_start is called inside initSync
+                if needs_manual_start
+                    && !(matches!(self.config.mode, OutputMode::Node { module: true })
+                        && self.threads_enabled)
+                {
                     start
                         .get_or_insert_with(String::new)
                         .push_str("\nwasm.__wbindgen_start();\n");
@@ -2389,9 +2552,9 @@ wasm = wasmInstance.exports;
             let resized_check = if self.module.memories.get(memory).shared {
                 // When it's backed by a `SharedArrayBuffer`, growing the Wasm module's memory
                 // doesn't detach old references; instead, it just leaves them pointing to a
-                // slice of the up-to-date memory. So in order to check if it's been grown, we
-                // have to compare it to the up-to-date buffer.
-                format!("{cache}.buffer !== wasm.{mem}.buffer")
+                // slice of the up-to-date memory. The buffer reference stays the same, but
+                // byteLength increases, so we compare byteLength to detect growth.
+                format!("{cache}.byteLength !== wasm.{mem}.buffer.byteLength")
             } else if kind == "DataView" {
                 // `DataView`s throw when accessing detached memory, including `byteLength`.
                 // However this requires JS engine support, so we fallback to comparing the buffer.
