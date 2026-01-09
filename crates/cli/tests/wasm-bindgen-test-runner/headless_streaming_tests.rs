@@ -1936,7 +1936,7 @@ fn test_user_spawned_worker_logs_on_failure_browser() {
         r#"
 [dependencies.web-sys]
 path = '{root}/crates/web-sys'
-features = ["Blob", "BlobPropertyBag", "Url", "Worker", "Window"]
+features = ["Blob", "BlobPropertyBag", "ErrorEvent", "Url", "Worker", "Window"]
 "#,
     );
 
@@ -1953,8 +1953,11 @@ features = ["Blob", "BlobPropertyBag", "Url", "Worker", "Window"]
                 use js_sys::Array;
                 use web_sys::{Blob, BlobPropertyBag, Url, Worker};
 
-                // Create a worker script that logs a unique marker
-                let script = r#"console.log("SPAWNED_WORKER_FAILURE_TEST_MARKER_8Y3M4");"#;
+                // Create a worker script that logs a unique marker then throws an error
+                let script = r#"
+                    console.log("SPAWNED_WORKER_FAILURE_TEST_MARKER_8Y3M4");
+                    throw new Error("Intentional worker failure");
+                "#;
                 let arr = Array::new();
                 arr.push(&JsValue::from_str(script));
                 let opts = BlobPropertyBag::new();
@@ -1963,17 +1966,19 @@ features = ["Blob", "BlobPropertyBag", "Url", "Worker", "Window"]
                 let url = Url::create_object_url_with_blob(&blob).unwrap();
                 let worker = Worker::new(&url).unwrap();
 
-                // Wait for worker to execute
-                wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(&mut |resolve, _| {
-                    web_sys::window().unwrap()
-                        .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 200).unwrap();
-                })).await.unwrap();
+                // Wait for the worker error via a promise that rejects on error
+                let error_promise = js_sys::Promise::new(&mut |_resolve, reject| {
+                    let reject_clone = reject.clone();
+                    let onerror = Closure::once_into_js(move |e: web_sys::ErrorEvent| {
+                        reject_clone.call1(&JsValue::NULL, &e.message().into()).unwrap();
+                    });
+                    worker.set_onerror(Some(onerror.unchecked_ref()));
+                });
 
-                worker.terminate();
+                // This will reject when the worker throws
+                wasm_bindgen_futures::JsFuture::from(error_promise).await.unwrap();
+
                 Url::revoke_object_url(&url).unwrap();
-
-                // Now panic to make the test fail - this should trigger console_log output
-                panic!("Intentional failure to trigger console log output");
             }
         "##,
     );
@@ -2021,6 +2026,14 @@ features = ["Blob", "BlobPropertyBag", "Url", "Worker", "Window"]
          This test verifies that console.log from user-spawned workers is shown when tests fail.\n\
          stdout:\n{}\nstderr:\n{}",
         count, stdout, stderr
+    );
+
+    // Verify the worker's panic/error message appears in the output
+    assert!(
+        combined.contains("Intentional worker failure"),
+        "Expected worker panic message 'Intentional worker failure' to appear in output.\n\
+         stdout:\n{}\nstderr:\n{}",
+        stdout, stderr
     );
 }
 
@@ -2173,7 +2186,7 @@ fn test_user_spawned_shared_worker_logs_on_failure_browser() {
         r#"
 [dependencies.web-sys]
 path = '{root}/crates/web-sys'
-features = ["Blob", "BlobPropertyBag", "Url", "SharedWorker", "MessagePort", "Window"]
+features = ["Blob", "BlobPropertyBag", "ErrorEvent", "Url", "SharedWorker", "MessagePort", "Window"]
 "#,
     );
 
@@ -2190,11 +2203,11 @@ features = ["Blob", "BlobPropertyBag", "Url", "SharedWorker", "MessagePort", "Wi
                 use js_sys::Array;
                 use web_sys::{Blob, BlobPropertyBag, Url, SharedWorker};
 
-                // Create a shared worker script that logs a unique marker on connect
+                // Create a shared worker script that logs a unique marker on connect then throws
                 let script = r#"
                     onconnect = function(e) {
                         console.log("SPAWNED_SHARED_WORKER_FAILURE_MARKER_5K9N2");
-                        e.ports[0].postMessage("done");
+                        throw new Error("Intentional shared worker failure");
                     };
                 "#;
                 let arr = Array::new();
@@ -2207,16 +2220,19 @@ features = ["Blob", "BlobPropertyBag", "Url", "SharedWorker", "MessagePort", "Wi
                 let port = worker.port();
                 port.start();
 
-                // Wait for worker to execute
-                wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(&mut |resolve, _| {
-                    web_sys::window().unwrap()
-                        .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 200).unwrap();
-                })).await.unwrap();
+                // Wait for the worker error via a promise that rejects on error
+                let error_promise = js_sys::Promise::new(&mut |_resolve, reject| {
+                    let reject_clone = reject.clone();
+                    let onerror = Closure::once_into_js(move |e: web_sys::ErrorEvent| {
+                        reject_clone.call1(&JsValue::NULL, &e.message().into()).unwrap();
+                    });
+                    worker.set_onerror(Some(onerror.unchecked_ref()));
+                });
+
+                // This will reject when the worker throws
+                wasm_bindgen_futures::JsFuture::from(error_promise).await.unwrap();
 
                 Url::revoke_object_url(&url).unwrap();
-
-                // Now panic to make the test fail
-                panic!("Intentional failure to trigger console log output");
             }
         "##,
     );
@@ -2264,6 +2280,14 @@ features = ["Blob", "BlobPropertyBag", "Url", "SharedWorker", "MessagePort", "Wi
          This test verifies that console.log from user-spawned shared workers is shown when tests fail.\n\
          stdout:\n{}\nstderr:\n{}",
         count, stdout, stderr
+    );
+
+    // Verify the worker's panic/error message appears in the output
+    assert!(
+        combined.contains("Intentional shared worker failure"),
+        "Expected shared worker panic message 'Intentional shared worker failure' to appear in output.\n\
+         stdout:\n{}\nstderr:\n{}",
+        stdout, stderr
     );
 }
 

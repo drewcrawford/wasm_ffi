@@ -34,7 +34,9 @@ pub(crate) fn spawn(
 });
 "#;
 
-    // Console shim for SharedWorkers - needs to track ports from connections
+    // Console shim for SharedWorkers - needs to track ports from connections.
+    // Also captures uncaught errors since SharedWorker.onerror on the main thread
+    // only fires for script load errors, not runtime errors.
     let shared_worker_console_shim = r#"
 const __wbg_ports = [];
 self.addEventListener('connect', e => {
@@ -46,6 +48,10 @@ self.addEventListener('connect', e => {
         og.apply(this, a);
         __wbg_ports.forEach(p => p.postMessage(["__wbgtest_" + m, a]));
     };
+});
+self.addEventListener('error', e => {
+    const msg = e.message || String(e);
+    console.error('Uncaught error in SharedWorker:', msg);
 });
 "#;
 
