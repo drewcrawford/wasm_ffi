@@ -5,11 +5,25 @@
   </head>
   <body>
     <pre id='output'>Loading scripts...</pre>
+    <pre id='console_output' style='display:none'></pre>
     <script>
+     const appendTo = id => (...args) => {
+         const el = document.getElementById(id);
+         for (const msg of args) {
+             el.appendChild(document.createTextNode(`${msg}\n`));
+         }
+     };
+
+     // {NOCAPTURE}
      const wrap = method => {
          const og = console[method];
          const on_method = `on_console_${method}`;
          console[method] = function (...args) {
+             if (nocapture) {
+                 appendTo("output").apply(this, args);
+             } else {
+                 appendTo("console_output").apply(this, args);
+             }
              if (window[on_method]) {
                  window[on_method](args);
              }

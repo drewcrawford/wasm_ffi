@@ -34,7 +34,9 @@ pub(crate) fn spawn(
 });
 "#;
 
-    // Console shim for SharedWorkers - needs to track ports from connections
+    // Console shim for SharedWorkers - needs to track ports from connections.
+    // Also captures uncaught errors since SharedWorker.onerror on the main thread
+    // only fires for script load errors, not runtime errors.
     let shared_worker_console_shim = r#"
 const __wbg_ports = [];
 self.addEventListener('connect', e => {
@@ -46,6 +48,10 @@ self.addEventListener('connect', e => {
         og.apply(this, a);
         __wbg_ports.forEach(p => p.postMessage(["__wbgtest_" + m, a]));
     };
+});
+self.addEventListener('error', e => {
+    const msg = e.message || String(e);
+    console.error('Uncaught error in SharedWorker:', msg);
 });
 "#;
 
@@ -63,17 +69,9 @@ function __wbg_worker_message_handler(e) {{
         const method = e.data[0].slice(10);
         const args = e.data[1];
         if (['debug','log','info','warn','error'].includes(method)) {{
-            // In nocapture mode, also write to the output element (matches main page console behavior)
-            if (typeof nocapture !== 'undefined' && nocapture) {{
-                const output = document.getElementById('output');
-                if (output) {{
-                    for (const msg of args) {{
-                        output.appendChild(document.createTextNode(String(msg) + '\n'));
-                    }}
-                }}
-            }}
-            // Always write to the console-specific element
-            const el = document.getElementById('console_' + method);
+            // Write to the appropriate element based on capture mode
+            const targetId = (typeof nocapture !== 'undefined' && nocapture) ? 'output' : 'console_output';
+            const el = document.getElementById(targetId);
             if (el) {{
                 for (const msg of args) {{
                     el.appendChild(document.createTextNode(String(msg) + '\n'));
