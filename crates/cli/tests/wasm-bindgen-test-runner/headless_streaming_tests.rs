@@ -2033,7 +2033,8 @@ features = ["Blob", "BlobPropertyBag", "ErrorEvent", "Url", "Worker", "Window"]
         combined.contains("Intentional worker failure"),
         "Expected worker panic message 'Intentional worker failure' to appear in output.\n\
          stdout:\n{}\nstderr:\n{}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -2539,6 +2540,117 @@ globalThis.spawnWorkerWithLog = function() {
         "Some console log levels were not captured correctly:\n{}\n\
          stdout:\n{}\nstderr:\n{}",
         failures.join("\n"),
+        stdout,
+        stderr
+    );
+}
+
+/// Test that console.log and error from a user-spawned worker_thread appears when the worker fails in Node.js.
+#[test]
+fn test_user_spawned_worker_logs_on_failure_node() {
+    let mut project = Project::new("test_user_spawned_worker_logs_on_failure_node");
+
+    // Add wasm-bindgen-futures for async support
+    project
+        .deps
+        .push_str("wasm-bindgen-futures = { path = '{root}/crates/futures' }\n");
+
+    // Create a JS file that spawns a worker that logs then throws
+    project.file(
+        "worker_spawner.cjs",
+        r#"
+const { Worker } = require('worker_threads');
+
+globalThis.spawnWorkerWithLogThenFail = function() {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(
+            `
+            console.log("NODE_WORKER_FAILURE_MARKER_7X9K3");
+            throw new Error("Intentional node worker failure");
+            `,
+            { eval: true }
+        );
+        worker.on('exit', (code) => {
+            if (code !== 0) {
+                reject(new Error('Worker exited with code ' + code));
+            } else {
+                resolve();
+            }
+        });
+        worker.on('error', reject);
+    });
+};
+"#,
+    );
+
+    project.file(
+        "src/lib.rs",
+        r#"
+            use wasm_bindgen::prelude::*;
+            use wasm_bindgen_test::*;
+
+            #[wasm_bindgen]
+            extern "C" {
+                #[wasm_bindgen(js_name = spawnWorkerWithLogThenFail)]
+                async fn spawn_worker_with_log_then_fail();
+            }
+
+            #[wasm_bindgen_test]
+            async fn test_spawned_worker_logs_then_fails() {
+                spawn_worker_with_log_then_fail().await;
+            }
+        "#,
+    );
+
+    project.cargo_toml();
+    let runner = REPO_ROOT.join("crates").join("cli").join("Cargo.toml");
+
+    let output = Command::new("cargo")
+        .current_dir(&project.root)
+        .arg("test")
+        .arg("--target")
+        .arg("wasm32-unknown-unknown")
+        .env("CARGO_TARGET_DIR", &*TARGET_DIR)
+        .env(
+            "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER",
+            format!(
+                "cargo run --manifest-path {} --bin wasm-bindgen-test-runner --",
+                runner.display()
+            ),
+        )
+        .env(
+            "NODE_ARGS",
+            format!("--require={}/worker_spawner.cjs", project.root.display()),
+        )
+        .output()
+        .expect("failed to execute cargo test");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    // The inner test should FAIL (worker throws)
+    assert!(
+        !output.status.success(),
+        "Inner test should fail.\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr
+    );
+
+    // Verify the log marker appears
+    let count = combined.matches("NODE_WORKER_FAILURE_MARKER_7X9K3").count();
+    assert_eq!(
+        count, 1,
+        "Expected worker log marker to appear exactly once in failure output, but it appeared {} times.\n\
+         stdout:\n{}\nstderr:\n{}",
+        count, stdout, stderr
+    );
+
+    // Verify the worker's error message appears in the output
+    assert!(
+        combined.contains("Intentional node worker failure"),
+        "Expected worker error message 'Intentional node worker failure' to appear in output.\n\
+         stdout:\n{}\nstderr:\n{}",
         stdout,
         stderr
     );

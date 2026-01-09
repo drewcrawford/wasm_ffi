@@ -225,35 +225,20 @@ pub fn run(
     }
 
     if !output_buf.contains("test result: ok") {
-        // Read console logs incrementally to avoid exceeding WebDriver response limits
-        let mut has_logs = false;
-        let mut log_offset = 0;
+        // Read console output incrementally to avoid exceeding WebDriver response limits
+        let mut has_console = false;
+        let mut console_offset = 0;
         loop {
-            let chunk = client.text_content(&id, "#console_log", log_offset)?;
+            let chunk = client.text_content(&id, "#console_output", console_offset)?;
             if chunk.is_empty() {
                 break;
             }
-            if !has_logs {
-                println!("console.log div contained:");
-                has_logs = true;
+            if !has_console {
+                println!("console output:");
+                has_console = true;
             }
             io::stdout().lock().write_all(tab(&chunk).as_bytes())?;
-            log_offset += chunk.len();
-        }
-
-        let mut has_errors = false;
-        let mut error_offset = 0;
-        loop {
-            let chunk = client.text_content(&id, "#console_error", error_offset)?;
-            if chunk.is_empty() {
-                break;
-            }
-            if !has_errors {
-                println!("console.error div contained:");
-                has_errors = true;
-            }
-            io::stdout().lock().write_all(tab(&chunk).as_bytes())?;
-            error_offset += chunk.len();
+            console_offset += chunk.len();
         }
 
         bail!("some tests failed")

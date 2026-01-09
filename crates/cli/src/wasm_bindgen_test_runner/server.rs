@@ -69,17 +69,9 @@ function __wbg_worker_message_handler(e) {{
         const method = e.data[0].slice(10);
         const args = e.data[1];
         if (['debug','log','info','warn','error'].includes(method)) {{
-            // In nocapture mode, also write to the output element (matches main page console behavior)
-            if (typeof nocapture !== 'undefined' && nocapture) {{
-                const output = document.getElementById('output');
-                if (output) {{
-                    for (const msg of args) {{
-                        output.appendChild(document.createTextNode(String(msg) + '\n'));
-                    }}
-                }}
-            }}
-            // Always write to the console-specific element
-            const el = document.getElementById('console_' + method);
+            // Write to the appropriate element based on capture mode
+            const targetId = (typeof nocapture !== 'undefined' && nocapture) ? 'output' : 'console_output';
+            const el = document.getElementById(targetId);
             if (el) {{
                 for (const msg of args) {{
                     el.appendChild(document.createTextNode(String(msg) + '\n'));
