@@ -1,6 +1,42 @@
+/* @ts-self-types="./reference_test.d.ts" */
 
-let imports = {};
-imports['./reference_test_bg.js'] = module.exports;
+/**
+ * @param {number} a
+ * @param {number} b
+ * @returns {number}
+ */
+function add_that_might_fail(a, b) {
+    const ret = wasm.add_that_might_fail(a, b);
+    return ret >>> 0;
+}
+exports.add_that_might_fail = add_that_might_fail;
+
+function __wbg_get_imports(memory) {
+    const import0 = {
+        __proto__: null,
+        __wbg___wbindgen_throw_dd24417ed36fc46e: function(arg0, arg1) {
+            throw new Error(getStringFromWasm0(arg0, arg1));
+        },
+        __wbg_random_e2b253f0e987bd7c: function() {
+            const ret = Math.random();
+            return ret;
+        },
+        __wbindgen_init_externref_table: function() {
+            const table = wasm.__wbindgen_externrefs;
+            const offset = table.grow(4);
+            table.set(0, undefined);
+            table.set(offset + 0, undefined);
+            table.set(offset + 1, null);
+            table.set(offset + 2, true);
+            table.set(offset + 3, false);
+        },
+        memory: memory || new WebAssembly.Memory({initial:18,maximum:16384,shared:true}),
+    };
+    return {
+        __proto__: null,
+        "./reference_test_bg.js": import0,
+    };
+}
 
 function getStringFromWasm0(ptr, len) {
     ptr = ptr >>> 0;
@@ -22,54 +58,12 @@ function decodeText(ptr, len) {
     return cachedTextDecoder.decode(getUint8ArrayMemory0().slice(ptr, ptr + len));
 }
 
-/**
- * @param {number} a
- * @param {number} b
- * @returns {number}
- */
-function add_that_might_fail(a, b) {
-    const ret = wasm.add_that_might_fail(a, b);
-    return ret >>> 0;
-}
-exports.add_that_might_fail = add_that_might_fail;
-
-exports.__wbg___wbindgen_throw_dd24417ed36fc46e = function(arg0, arg1) {
-    throw new Error(getStringFromWasm0(arg0, arg1));
-};
-
-exports.__wbg_random_e2b253f0e987bd7c = function() {
-    const ret = Math.random();
-    return ret;
-};
-
-exports.__wbindgen_init_externref_table = function() {
-    const table = wasm.__wbindgen_externrefs;
-    const offset = table.grow(4);
-    table.set(0, undefined);
-    table.set(offset + 0, undefined);
-    table.set(offset + 1, null);
-    table.set(offset + 2, true);
-    table.set(offset + 3, false);
-};
-
-exports.memory = new WebAssembly.Memory({initial:18,maximum:16384,shared:true});
-
-let __wbg_memory;
-exports.__wbg_get_imports = function(customMemory) {
-    __wbg_memory = customMemory !== undefined ? customMemory : exports.memory;
-    const imports = {};
-    imports['./reference_test_bg.js'] = {
-        __wbg___wbindgen_throw_dd24417ed36fc46e: exports.__wbg___wbindgen_throw_dd24417ed36fc46e,
-        __wbg_random_e2b253f0e987bd7c: exports.__wbg_random_e2b253f0e987bd7c,
-        __wbindgen_init_externref_table: exports.__wbindgen_init_externref_table,
-        memory: __wbg_memory,
-    };
-    return imports;
-};
-
 let wasm;
 let wasmModule;
 let __initialized = false;
+
+// Export __wbg_get_imports for workers to use
+exports.__wbg_get_imports = __wbg_get_imports;
 
 exports.initSync = function(opts) {
     if (opts === undefined) opts = {};
@@ -90,14 +84,15 @@ exports.initSync = function(opts) {
         wasmModule = module;
     }
 
-    const wasmImports = exports.__wbg_get_imports(memory);
+    const wasmImports = __wbg_get_imports(memory);
     const instance = new WebAssembly.Instance(wasmModule, wasmImports);
     wasm = instance.exports;
     exports.__wasm = wasm;
     exports.__wbindgen_wasm_module = wasmModule;
+    exports.memory = wasmImports['./reference_test_bg.js'].memory;
+
     if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) { throw new Error('invalid stack size'); }
     wasm.__wbindgen_start(thread_stack_size);
-
     __initialized = true;
     return wasm;
 };
