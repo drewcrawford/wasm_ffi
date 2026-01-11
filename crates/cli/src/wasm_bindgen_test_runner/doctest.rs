@@ -11,11 +11,7 @@ use std::{env, fs};
 use anyhow::{bail, Context, Error};
 
 /// Execute a doctest in Node.js by calling its `main` function.
-pub fn execute_node(
-    module: &str,
-    tmpdir: &Path,
-    module_format: bool,
-) -> Result<(), Error> {
+pub fn execute_node(module: &str, tmpdir: &Path, module_format: bool) -> Result<(), Error> {
     let js_to_execute = if !module_format {
         // CommonJS format - wasm is loaded synchronously
         format!(
