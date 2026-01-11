@@ -22,6 +22,7 @@ use std::thread;
 use wasm_bindgen_cli_support::Bindgen;
 
 mod deno;
+mod doctest;
 mod headless;
 mod node;
 mod server;
@@ -222,10 +223,16 @@ fn rmain(cli: Cli) -> anyhow::Result<()> {
 
     let module = "wasm-bindgen-test";
 
+    // Check if this is a doctest - doctests have a `main` export instead of
+    // `__wbgt_*` test exports. When no tests are found but there's a `main`
+    // function, we execute it as a single doctest.
+    let has_main_export = wasm.exports.iter().any(|e| e.name == "main");
+    let is_doctest = tests.tests.is_empty() && has_main_export;
+
     // Right now there's a bug where if no tests are present then the
     // `wasm-bindgen-test` runtime support isn't linked in, so just bail out
     // early saying everything is ok.
-    if tests.tests.is_empty() {
+    if tests.tests.is_empty() && !is_doctest {
         println!("no tests to run!");
         return Ok(());
     }
@@ -373,50 +380,99 @@ fn rmain(cli: Cli) -> anyhow::Result<()> {
         .context("executing `wasm-bindgen` over the Wasm file")?;
     shell.clear();
 
-    match test_mode {
-        TestMode::Node { no_modules } => {
-            node::execute(module, &tmpdir_path, cli, tests, !no_modules, benchmark)?
-        }
-        TestMode::Deno => deno::execute(module, &tmpdir_path, cli, tests)?,
-        TestMode::Browser { .. }
-        | TestMode::DedicatedWorker { .. }
-        | TestMode::SharedWorker { .. }
-        | TestMode::ServiceWorker { .. } => {
-            let srv = server::spawn(
-                &if headless {
-                    "127.0.0.1:0".parse().unwrap()
-                } else if let Ok(address) = std::env::var("WASM_BINDGEN_TEST_ADDRESS") {
-                    address.parse().unwrap()
-                } else {
-                    "127.0.0.1:8000".parse().unwrap()
-                },
-                headless,
-                module,
-                &tmpdir_path,
-                cli,
-                tests,
-                test_mode,
-                std::env::var("WASM_BINDGEN_TEST_NO_ORIGIN_ISOLATION").is_err(),
-                benchmark,
-            )
-            .context("failed to spawn server")?;
-            let addr = srv.server_addr();
-
-            // TODO: eventually we should provide the ability to exit at some point
-            // (gracefully) here, but for now this just runs forever.
-            if !headless {
-                println!("Interactive browsers tests are now available at http://{addr}");
-                println!();
-                println!("Note that interactive mode is enabled because `NO_HEADLESS`");
-                println!("is specified in the environment of this process. Once you're");
-                println!("done with testing you'll need to kill this server with");
-                println!("Ctrl-C.");
-                srv.run();
-                return Ok(());
+    // For doctests, use simplified execution that just calls main()
+    if is_doctest {
+        match test_mode {
+            TestMode::Node { no_modules } => {
+                println!("running 1 doctest");
+                doctest::execute_node(module, &tmpdir_path, !no_modules)?;
             }
+            TestMode::Deno => {
+                bail!("Doctest execution is not yet supported for Deno");
+            }
+            TestMode::Browser { .. }
+            | TestMode::DedicatedWorker { .. }
+            | TestMode::SharedWorker { .. }
+            | TestMode::ServiceWorker { .. } => {
+                println!("running 1 doctest");
+                let srv = server::spawn_doctest(
+                    &if headless {
+                        "127.0.0.1:0".parse().unwrap()
+                    } else if let Ok(address) = std::env::var("WASM_BINDGEN_TEST_ADDRESS") {
+                        address.parse().unwrap()
+                    } else {
+                        "127.0.0.1:8000".parse().unwrap()
+                    },
+                    headless,
+                    module,
+                    &tmpdir_path,
+                    test_mode,
+                    std::env::var("WASM_BINDGEN_TEST_NO_ORIGIN_ISOLATION").is_err(),
+                )
+                .context("failed to spawn server")?;
+                let addr = srv.server_addr();
 
-            thread::spawn(|| srv.run());
-            headless::run(&addr, &shell, driver_timeout, browser_timeout)?;
+                if !headless {
+                    println!("Interactive doctest is now available at http://{addr}");
+                    println!();
+                    println!("Note that interactive mode is enabled because `NO_HEADLESS`");
+                    println!("is specified in the environment of this process. Once you're");
+                    println!("done with testing you'll need to kill this server with");
+                    println!("Ctrl-C.");
+                    srv.run();
+                    return Ok(());
+                }
+
+                thread::spawn(|| srv.run());
+                headless::run(&addr, &shell, driver_timeout, browser_timeout)?;
+            }
+        }
+    } else {
+        match test_mode {
+            TestMode::Node { no_modules } => {
+                node::execute(module, &tmpdir_path, cli, tests, !no_modules, benchmark)?
+            }
+            TestMode::Deno => deno::execute(module, &tmpdir_path, cli, tests)?,
+            TestMode::Browser { .. }
+            | TestMode::DedicatedWorker { .. }
+            | TestMode::SharedWorker { .. }
+            | TestMode::ServiceWorker { .. } => {
+                let srv = server::spawn(
+                    &if headless {
+                        "127.0.0.1:0".parse().unwrap()
+                    } else if let Ok(address) = std::env::var("WASM_BINDGEN_TEST_ADDRESS") {
+                        address.parse().unwrap()
+                    } else {
+                        "127.0.0.1:8000".parse().unwrap()
+                    },
+                    headless,
+                    module,
+                    &tmpdir_path,
+                    cli,
+                    tests,
+                    test_mode,
+                    std::env::var("WASM_BINDGEN_TEST_NO_ORIGIN_ISOLATION").is_err(),
+                    benchmark,
+                )
+                .context("failed to spawn server")?;
+                let addr = srv.server_addr();
+
+                // TODO: eventually we should provide the ability to exit at some point
+                // (gracefully) here, but for now this just runs forever.
+                if !headless {
+                    println!("Interactive browsers tests are now available at http://{addr}");
+                    println!();
+                    println!("Note that interactive mode is enabled because `NO_HEADLESS`");
+                    println!("is specified in the environment of this process. Once you're");
+                    println!("done with testing you'll need to kill this server with");
+                    println!("Ctrl-C.");
+                    srv.run();
+                    return Ok(());
+                }
+
+                thread::spawn(|| srv.run());
+                headless::run(&addr, &shell, driver_timeout, browser_timeout)?;
+            }
         }
     }
     Ok(())
