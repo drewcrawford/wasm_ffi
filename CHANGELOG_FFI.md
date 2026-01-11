@@ -1,3 +1,12 @@
+# doctest-support
+
+Actually run doctests in wasm-bindgen-test-runner. Previously, doctests were silently skipped because they export a `main` function instead of `__wbgt_*` test exports. The runner would print "no tests to run!" and exit 0, causing the tooling to report the doctest as passed.
+
+Now doctests are detected and executed properly. Supports:
+- Node.js (default, no configuration needed)
+- Browser main thread (`wasm_bindgen_test_configure!(run_in_browser)`)
+- Dedicated worker (`wasm_bindgen_test_configure!(run_in_dedicated_worker)`)
+
 # nodejs-threads
 
 Add Node.js `worker_threads` support for atomics builds. Supports both CommonJS (`--target nodejs`) and ESM (`--target experimental-nodejs-module`) targets. When targeting Node.js with atomics enabled, wasm-bindgen now generates:

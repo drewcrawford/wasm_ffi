@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::sync::LazyLock;
 
-static TARGET_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
+mod doctests;
+
+pub static TARGET_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let mut dir = env::current_exe().unwrap();
     dir.pop(); // current exe
     if dir.ends_with("deps") {
@@ -19,22 +21,22 @@ static TARGET_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     dir
 });
 
-static REPO_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
+pub static REPO_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
     let mut repo_root = env::current_dir().unwrap();
     repo_root.pop(); // remove 'cli'
     repo_root.pop(); // remove 'crates'
     repo_root
 });
 
-struct Project {
-    root: PathBuf,
-    name: String,
-    deps: String,
-    dev_deps: String,
+pub struct Project {
+    pub root: PathBuf,
+    pub name: String,
+    pub deps: String,
+    pub dev_deps: String,
 }
 
 impl Project {
-    fn new(name: impl Into<String>) -> Project {
+    pub fn new(name: impl Into<String>) -> Project {
         let name = name.into();
         let root = TARGET_DIR.join("cli-tests").join(&name);
         drop(fs::remove_dir_all(&root));
@@ -47,7 +49,7 @@ impl Project {
         }
     }
 
-    fn file(&mut self, name: &str, contents: &str) -> &mut Project {
+    pub fn file(&mut self, name: &str, contents: &str) -> &mut Project {
         let dst = self.root.join(name);
         fs::create_dir_all(dst.parent().unwrap()).unwrap();
         fs::write(&dst, contents).unwrap();
