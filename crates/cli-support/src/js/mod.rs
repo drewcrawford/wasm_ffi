@@ -1684,6 +1684,17 @@ if (require('worker_threads').isMainThread) {{
         });
     }
 
+    fn expose_panic_error(&mut self) {
+        intrinsic(&mut self.intrinsics, "panic_error".into(), || {
+            "class PanicError extends Error {}
+            Object.defineProperty(PanicError.prototype, 'name', {
+                value: PanicError.name,
+            });
+            "
+            .into()
+        });
+    }
+
     fn expose_pass_string_to_wasm(&mut self, memory: MemoryId) -> MemView {
         self.expose_wasm_vector_len();
         let mem = self.expose_uint8_memory(memory);
@@ -4222,6 +4233,12 @@ if (require('worker_threads').isMainThread) {{
                     ));
                 }
                 base
+            }
+
+            Intrinsic::PanicError => {
+                assert_eq!(args.len(), 1);
+                self.expose_panic_error();
+                format!("new PanicError({})", args[0])
             }
         };
         Ok(expr)

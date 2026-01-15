@@ -1,5 +1,7 @@
 //! A small test suite for the `wasm-bindgen-test-runner` CLI command itself
 
+mod headless_streaming_tests;
+
 use assert_cmd::Command;
 use predicates::str;
 use std::env;
@@ -136,8 +138,6 @@ fn test_wasm_bindgen_test_runner_list() {
     assert_eq!(lines.next().as_deref(), Some("tests::test_foo: test"));
     assert_eq!(lines.next(), None);
 }
-
-mod headless_streaming_tests;
 
 /// Test that console.log output in dedicated worker mode is not duplicated.
 /// See: https://github.com/wasm-bindgen/wasm-bindgen/pull/4845#issuecomment-3660688206
