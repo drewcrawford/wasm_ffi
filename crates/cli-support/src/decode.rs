@@ -58,6 +58,13 @@ impl<'src> Decode<'src> for u32 {
 impl<'src> Decode<'src> for &'src str {
     fn decode(data: &mut &'src [u8]) -> &'src str {
         let n = u32::decode(data);
+        if n as usize > data.len() {
+            panic!(
+                "String decode failed: length {n} but only {} bytes remaining. First 20 bytes: {:?}",
+                data.len(),
+                &data[..data.len().min(20)]
+            );
+        }
         let (a, b) = data.split_at(n as usize);
         *data = b;
         let r = str::from_utf8(a).unwrap();
