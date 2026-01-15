@@ -7,15 +7,15 @@ export function exported() {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
-const import1 = require("tests/wasm/imports.js");
-const import2 = require("foo-raw");
-const import3 = require("./snippets/import_reftest-a82831e16a4c30f1/inline0.js");
-const import4 = require("pure-extern");
+import * as import1 from "tests/wasm/imports.js"
+import * as import2 from "foo-raw"
+import * as import3 from "./snippets/import_reftest-a82831e16a4c30f1/inline0.js"
+import * as import4 from "pure-extern"
 
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
-        __wbg___wbindgen_throw_dd24417ed36fc46e: function(arg0, arg1) {
+        __wbg___wbindgen_throw_6ea4cf636881bef8: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
         __wbg_catch_me_1d18acaa34acb005: function() { return handleError(function () {
