@@ -9,6 +9,37 @@ use rouille::{Request, Response, Server};
 
 use super::{Cli, TestMode, Tests};
 
+/// Try to serve an asset from a directory, handling ES module imports without extensions.
+fn try_asset(request: &Request, dir: &Path) -> Response {
+    let response = rouille::match_assets(request, dir);
+    if response.is_success() {
+        return response;
+    }
+
+    // When a browser is doing ES imports it's using the directives we
+    // write in the code that *don't* have file extensions (aka we say `from
+    // 'foo'` instead of `from 'foo.js'`. Fixup those paths here to see if a
+    // `js` file exists.
+    if let Some(part) = request.url().split('/').next_back() {
+        if !part.contains('.') {
+            let new_request = Request::fake_http(
+                request.method(),
+                format!("{}.js", request.url()),
+                request
+                    .headers()
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .collect(),
+                Vec::new(),
+            );
+            let response = rouille::match_assets(&new_request, dir);
+            if response.is_success() {
+                return response;
+            }
+        }
+    }
+    response
+}
+
 pub(crate) fn spawn(
     addr: &SocketAddr,
     headless: bool,
@@ -570,37 +601,7 @@ SharedWorker.prototype = __wbg_OriginalSharedWorker.prototype;
         response
     })
     .map_err(|e| anyhow!("{e}"))?;
-    return Ok(srv);
-
-    fn try_asset(request: &Request, dir: &Path) -> Response {
-        let response = rouille::match_assets(request, dir);
-        if response.is_success() {
-            return response;
-        }
-
-        // When a browser is doing ES imports it's using the directives we
-        // write in the code that *don't* have file extensions (aka we say `from
-        // 'foo'` instead of `from 'foo.js'`. Fixup those paths here to see if a
-        // `js` file exists.
-        if let Some(part) = request.url().split('/').next_back() {
-            if !part.contains('.') {
-                let new_request = Request::fake_http(
-                    request.method(),
-                    format!("{}.js", request.url()),
-                    request
-                        .headers()
-                        .map(|(a, b)| (a.to_string(), b.to_string()))
-                        .collect(),
-                    Vec::new(),
-                );
-                let response = rouille::match_assets(&new_request, dir);
-                if response.is_success() {
-                    return response;
-                }
-            }
-        }
-        response
-    }
+    Ok(srv)
 }
 
 fn handle_benchmark_fetch(path: &Path) -> Response {
@@ -658,4 +659,393 @@ fn set_isolate_origin_headers(response: &mut Response) {
         Cow::Borrowed("Cross-Origin-Embedder-Policy"),
         Cow::Borrowed("require-corp"),
     ));
+}
+
+/// Spawn a server for running doctests in a browser.
+/// Doctests are simpler than regular tests - they just call `main()`.
+pub(crate) fn spawn_doctest(
+    addr: &SocketAddr,
+    headless: bool,
+    module: &'static str,
+    tmpdir: &Path,
+    test_mode: TestMode,
+    isolate_origin: bool,
+) -> Result<Server<impl Fn(&Request) -> Response + Send + Sync>, Error> {
+    // For worker modes, we need to create a worker script
+    if test_mode.is_worker() {
+        let module_type = if test_mode.no_modules() {
+            "classic"
+        } else {
+            "module"
+        };
+
+        // Build worker script based on worker type
+        let (worker_script, worker_filename, main_page_script) = match test_mode {
+            TestMode::DedicatedWorker { .. } => {
+                // Console shim for dedicated worker - posts directly to self
+                let console_shim = r#"
+["debug","log","info","warn","error"].forEach(m => {
+    const og = console[m];
+    console[m] = function(...args) {
+        og.apply(this, args);
+        self.postMessage({ type: 'console', method: m, args: args.map(String) });
+    };
+});
+"#;
+                let worker = if test_mode.no_modules() {
+                    format!(
+                        r#"importScripts("{module}.js");
+{console_shim}
+async function runDoctest() {{
+    try {{
+        const wasm = await wasm_bindgen('./{module}_bg.wasm');
+        wasm.main();
+        self.postMessage({{ type: 'success' }});
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        self.postMessage({{ type: 'error', message: String(e) }});
+    }}
+}}
+runDoctest();
+"#
+                    )
+                } else {
+                    format!(
+                        r#"import init from './{module}.js';
+{console_shim}
+async function runDoctest() {{
+    try {{
+        const wasm = await init('./{module}_bg.wasm');
+        wasm.main();
+        self.postMessage({{ type: 'success' }});
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        self.postMessage({{ type: 'error', message: String(e) }});
+    }}
+}}
+runDoctest();
+"#
+                    )
+                };
+
+                let main_page = format!(
+                    r#"
+document.getElementById('output').textContent = "Running doctest...\n";
+const worker = new Worker('worker.js', {{ type: '{module_type}' }});
+
+worker.onmessage = function(e) {{
+    if (e.data.type === 'console') {{
+        const text = e.data.args.join(' ');
+        document.getElementById('output').textContent += text + '\n';
+    }} else if (e.data.type === 'success') {{
+        document.getElementById('output').textContent += "\ntest result: ok. 1 passed; 0 failed\n";
+    }} else if (e.data.type === 'error') {{
+        document.getElementById('output').textContent += "\nDoctest failed: " + e.data.message + "\n";
+        document.getElementById('output').textContent += "test result: FAILED. 0 passed; 1 failed\n";
+    }}
+}};
+
+worker.onerror = function(e) {{
+    console.error('Worker error:', e.message);
+    document.getElementById('output').textContent += "\nWorker error: " + e.message + "\n";
+    document.getElementById('output').textContent += "test result: FAILED. 0 passed; 1 failed\n";
+}};
+"#
+                );
+
+                (worker, "worker.js", main_page)
+            }
+
+            TestMode::SharedWorker { .. } => {
+                // SharedWorker uses 'connect' event and port-based messaging
+                let worker = if test_mode.no_modules() {
+                    format!(
+                        r#"importScripts("{module}.js");
+
+self.addEventListener('connect', async (e) => {{
+    const port = e.ports[0];
+
+    // Console shim that forwards to port
+    ["debug","log","info","warn","error"].forEach(m => {{
+        const og = console[m];
+        console[m] = function(...args) {{
+            og.apply(this, args);
+            port.postMessage({{ type: 'console', method: m, args: args.map(String) }});
+        }};
+    }});
+
+    try {{
+        const wasm = await wasm_bindgen('./{module}_bg.wasm');
+        wasm.main();
+        port.postMessage({{ type: 'success' }});
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        port.postMessage({{ type: 'error', message: String(e) }});
+    }}
+}});
+"#
+                    )
+                } else {
+                    format!(
+                        r#"import init from './{module}.js';
+
+self.addEventListener('connect', async (e) => {{
+    const port = e.ports[0];
+
+    // Console shim that forwards to port
+    ["debug","log","info","warn","error"].forEach(m => {{
+        const og = console[m];
+        console[m] = function(...args) {{
+            og.apply(this, args);
+            port.postMessage({{ type: 'console', method: m, args: args.map(String) }});
+        }};
+    }});
+
+    try {{
+        const wasm = await init('./{module}_bg.wasm');
+        wasm.main();
+        port.postMessage({{ type: 'success' }});
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        port.postMessage({{ type: 'error', message: String(e) }});
+    }}
+}});
+"#
+                    )
+                };
+
+                let main_page = format!(
+                    r#"
+document.getElementById('output').textContent = "Running doctest...\n";
+const worker = new SharedWorker('worker.js?random=' + crypto.randomUUID(), {{ type: '{module_type}' }});
+const port = worker.port;
+port.start();
+
+port.onmessage = function(e) {{
+    if (e.data.type === 'console') {{
+        const text = e.data.args.join(' ');
+        document.getElementById('output').textContent += text + '\n';
+    }} else if (e.data.type === 'success') {{
+        document.getElementById('output').textContent += "\ntest result: ok. 1 passed; 0 failed\n";
+    }} else if (e.data.type === 'error') {{
+        document.getElementById('output').textContent += "\nDoctest failed: " + e.data.message + "\n";
+        document.getElementById('output').textContent += "test result: FAILED. 0 passed; 1 failed\n";
+    }}
+}};
+
+worker.onerror = function(e) {{
+    console.error('SharedWorker error:', e.message);
+    document.getElementById('output').textContent += "\nSharedWorker error: " + e.message + "\n";
+    document.getElementById('output').textContent += "test result: FAILED. 0 passed; 1 failed\n";
+}};
+"#
+                );
+
+                (worker, "worker.js", main_page)
+            }
+
+            TestMode::ServiceWorker { .. } => {
+                // ServiceWorker has install/activate lifecycle
+                let worker = if test_mode.no_modules() {
+                    format!(
+                        r#"importScripts("{module}.js");
+
+self.addEventListener('install', (e) => self.skipWaiting());
+self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+
+self.addEventListener('message', async (e) => {{
+    const port = e.ports[0];
+
+    // Console shim that forwards to port
+    ["debug","log","info","warn","error"].forEach(m => {{
+        const og = console[m];
+        console[m] = function(...args) {{
+            og.apply(this, args);
+            port.postMessage({{ type: 'console', method: m, args: args.map(String) }});
+        }};
+    }});
+
+    try {{
+        const wasm = await wasm_bindgen('./{module}_bg.wasm');
+        wasm.main();
+        port.postMessage({{ type: 'success' }});
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        port.postMessage({{ type: 'error', message: String(e) }});
+    }}
+}});
+"#
+                    )
+                } else {
+                    format!(
+                        r#"import init from './{module}.js';
+
+self.addEventListener('install', (e) => self.skipWaiting());
+self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+
+self.addEventListener('message', async (e) => {{
+    const port = e.ports[0];
+
+    // Console shim that forwards to port
+    ["debug","log","info","warn","error"].forEach(m => {{
+        const og = console[m];
+        console[m] = function(...args) {{
+            og.apply(this, args);
+            port.postMessage({{ type: 'console', method: m, args: args.map(String) }});
+        }};
+    }});
+
+    try {{
+        const wasm = await init('./{module}_bg.wasm');
+        wasm.main();
+        port.postMessage({{ type: 'success' }});
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        port.postMessage({{ type: 'error', message: String(e) }});
+    }}
+}});
+"#
+                    )
+                };
+
+                let main_page = format!(
+                    r#"
+document.getElementById('output').textContent = "Running doctest...\n";
+
+(async () => {{
+    const url = 'service.js?random=' + crypto.randomUUID();
+    const registration = await navigator.serviceWorker.register(url, {{ type: '{module_type}' }});
+
+    // Wait for the service worker to be ready
+    await new Promise((resolve) => {{
+        if (navigator.serviceWorker.controller) {{
+            resolve();
+        }} else {{
+            navigator.serviceWorker.addEventListener('controllerchange', () => resolve());
+        }}
+    }});
+
+    const channel = new MessageChannel();
+    channel.port1.onmessage = function(e) {{
+        if (e.data.type === 'console') {{
+            const text = e.data.args.join(' ');
+            document.getElementById('output').textContent += text + '\n';
+        }} else if (e.data.type === 'success') {{
+            document.getElementById('output').textContent += "\ntest result: ok. 1 passed; 0 failed\n";
+        }} else if (e.data.type === 'error') {{
+            document.getElementById('output').textContent += "\nDoctest failed: " + e.data.message + "\n";
+            document.getElementById('output').textContent += "test result: FAILED. 0 passed; 1 failed\n";
+        }}
+    }};
+
+    navigator.serviceWorker.controller.postMessage(null, [channel.port2]);
+}})().catch(e => {{
+    console.error('ServiceWorker error:', e);
+    document.getElementById('output').textContent += "\nServiceWorker error: " + e + "\n";
+    document.getElementById('output').textContent += "test result: FAILED. 0 passed; 1 failed\n";
+}});
+"#
+                );
+
+                (worker, "service.js", main_page)
+            }
+
+            _ => unreachable!("non-worker mode in worker branch"),
+        };
+
+        let worker_js_path = tmpdir.join(worker_filename);
+        fs::write(&worker_js_path, worker_script).context("failed to write worker JS file")?;
+
+        let js_path = tmpdir.join("run.js");
+        fs::write(&js_path, main_page_script).context("failed to write JS file")?;
+    } else {
+        // Browser mode (main thread) - run doctest directly on the page
+        let js_to_execute = if test_mode.no_modules() {
+            format!(
+                r#"
+async function runDoctest() {{
+    document.getElementById('output').textContent = "Loading Wasm module...\n";
+    try {{
+        const wasm = await wasm_bindgen('./{module}_bg.wasm');
+        document.getElementById('output').textContent += "Running doctest...\n";
+        wasm.main();
+        document.getElementById('output').textContent += "\ntest result: ok. 1 passed; 0 failed\n";
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        document.getElementById('output').textContent += "\nDoctest failed: " + e + "\n";
+        document.getElementById('output').textContent += "test result: FAILED. 0 passed; 1 failed\n";
+    }}
+}}
+runDoctest();
+"#
+            )
+        } else {
+            format!(
+                r#"
+import init from './{module}.js';
+
+async function runDoctest() {{
+    document.getElementById('output').textContent = "Loading Wasm module...\n";
+    try {{
+        const wasm = await init('./{module}_bg.wasm');
+        document.getElementById('output').textContent += "Running doctest...\n";
+        wasm.main();
+        document.getElementById('output').textContent += "\ntest result: ok. 1 passed; 0 failed\n";
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        document.getElementById('output').textContent += "\nDoctest failed: " + e + "\n";
+        document.getElementById('output').textContent += "test result: FAILED. 0 passed; 1 failed\n";
+    }}
+}}
+runDoctest();
+"#
+            )
+        };
+
+        let js_path = tmpdir.join("run.js");
+        fs::write(&js_path, js_to_execute).context("failed to write JS file")?;
+    }
+
+    let tmpdir = tmpdir.to_path_buf();
+    let srv = Server::new(addr, move |request| {
+        if request.url() == "/" {
+            let s = if headless {
+                include_str!("index-headless.html")
+            } else {
+                include_str!("index.html")
+            };
+            let s = s.replace("// {NOCAPTURE}", "const nocapture = true;");
+            let s = if test_mode.no_modules() {
+                s.replace(
+                    "<!-- {IMPORT_SCRIPTS} -->",
+                    &format!("<script src='{module}.js'></script>\n<script src='run.js'></script>"),
+                )
+            } else {
+                s.replace(
+                    "<!-- {IMPORT_SCRIPTS} -->",
+                    "<script src='run.js' type=module></script>",
+                )
+            };
+
+            let mut response = Response::from_data("text/html", s);
+            if isolate_origin {
+                set_isolate_origin_headers(&mut response)
+            }
+            return response;
+        }
+
+        // Serve static files
+        let mut response = try_asset(request, &tmpdir);
+        if !response.is_success() {
+            response = try_asset(request, ".".as_ref());
+        }
+        response.headers.retain(|(k, _)| k != "Cache-Control");
+        if isolate_origin {
+            set_isolate_origin_headers(&mut response)
+        }
+        response
+    })
+    .map_err(|e| anyhow!("{e}"))?;
+
+    Ok(srv)
 }
