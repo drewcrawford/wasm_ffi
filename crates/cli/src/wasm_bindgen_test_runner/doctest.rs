@@ -100,6 +100,157 @@ try {{
     Ok(())
 }
 
+/// Execute a doctest in a Node.js worker thread.
+///
+/// This allows the test code to use `Atomics.wait` (which is blocked on the main thread
+/// in browsers but works in Node.js workers). Child workers spawned by the test can
+/// run while the test worker is blocked, enabling synchronous blocking patterns like
+/// `wasm_safe_thread::spawn().join()`.
+///
+/// Use this when the doctest is configured with `wasm_bindgen_test_configure!(run_in_dedicated_worker)`.
+pub fn execute_node_worker(module: &str, tmpdir: &Path, module_format: bool) -> Result<(), Error> {
+    let js_to_execute = if !module_format {
+        // CommonJS format
+        format!(
+            r#"
+const {{ exit }} = require('node:process');
+const {{ Worker, isMainThread, workerData }} = require('node:worker_threads');
+const {{ readFileSync }} = require('node:fs');
+const {{ join }} = require('node:path');
+
+if (isMainThread) {{
+    // Main thread: spawn worker and wait for completion
+    const worker = new Worker(__filename, {{
+        workerData: {{ runDoctest: true }}
+    }});
+
+    worker.on('exit', (code) => {{
+        exit(code);
+    }});
+
+    worker.on('error', (err) => {{
+        console.error('Worker error:', err);
+        exit(1);
+    }});
+}} else if (workerData && workerData.runDoctest) {{
+    // Worker thread: load wasm and run test
+    // wasm-bindgen only auto-initializes on main thread, so we must call initSync
+    const wasm = require('./{module}.js');
+
+    try {{
+        // In worker context, __wasm may not be set yet - need to initialize
+        if (!wasm.__wasm) {{
+            const wasmPath = join(__dirname, '{module}_bg.wasm');
+            const wasmBytes = readFileSync(wasmPath);
+            wasm.initSync(wasmBytes);
+        }}
+
+        if (typeof wasm.__wasm.main === 'function') {{
+            wasm.__wasm.main();
+        }} else {{
+            throw new Error('No main function found in doctest wasm module');
+        }}
+        console.log('test result: ok. 1 passed; 0 failed');
+        exit(0);
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        console.log('test result: FAILED. 0 passed; 1 failed');
+        exit(1);
+    }}
+}}
+"#
+        )
+    } else {
+        // ES module format - need to handle dynamic import in worker
+        format!(
+            r#"
+import {{ exit }} from 'node:process';
+import {{ Worker, isMainThread, workerData }} from 'node:worker_threads';
+import {{ readFileSync }} from 'node:fs';
+import {{ fileURLToPath }} from 'node:url';
+import {{ dirname, join }} from 'node:path';
+
+if (isMainThread) {{
+    // Main thread: spawn worker and wait for completion
+    const worker = new Worker(new URL(import.meta.url), {{
+        workerData: {{ runDoctest: true }}
+    }});
+
+    worker.on('exit', (code) => {{
+        exit(code);
+    }});
+
+    worker.on('error', (err) => {{
+        console.error('Worker error:', err);
+        exit(1);
+    }});
+}} else if (workerData && workerData.runDoctest) {{
+    // Worker thread: dynamically import wasm and run test
+    // wasm-bindgen only auto-initializes on main thread, so we must call initSync
+    try {{
+        const wasm = await import('./{module}.js');
+
+        // In worker context, __wasm may not be set yet - need to initialize
+        if (!wasm.__wasm) {{
+            const __dirname = dirname(fileURLToPath(import.meta.url));
+            const wasmPath = join(__dirname, '{module}_bg.wasm');
+            const wasmBytes = readFileSync(wasmPath);
+            wasm.initSync(wasmBytes);
+        }}
+
+        if (typeof wasm.__wasm.main === 'function') {{
+            wasm.__wasm.main();
+        }} else {{
+            throw new Error('No main function found in doctest wasm module');
+        }}
+        console.log('test result: ok. 1 passed; 0 failed');
+        exit(0);
+    }} catch (e) {{
+        console.error('Doctest failed:', e);
+        console.log('test result: FAILED. 0 passed; 1 failed');
+        exit(1);
+    }}
+}}
+"#
+        )
+    };
+
+    let js_path = if module_format {
+        // For ES modules, need package.json with type: module
+        let package_json = tmpdir.join("package.json");
+        fs::write(&package_json, r#"{"type": "module"}"#).unwrap();
+        tmpdir.join("run.mjs")
+    } else {
+        tmpdir.join("run.cjs")
+    };
+    fs::write(&js_path, js_to_execute).context("failed to write JS file")?;
+
+    // Augment `NODE_PATH` so imports work correctly
+    let path = env::var("NODE_PATH").unwrap_or_default();
+    let mut path = env::split_paths(&path).collect::<Vec<_>>();
+    path.push(env::current_dir().unwrap());
+    path.push(tmpdir.to_path_buf());
+    let extra_node_args = env::var("NODE_ARGS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+
+    let status = Command::new("node")
+        .env("NODE_PATH", env::join_paths(&path).unwrap())
+        .args(&extra_node_args)
+        .arg(&js_path)
+        .status()
+        .context("failed to find or execute Node.js")?;
+
+    if !status.success() {
+        bail!("Node failed with exit_code {}", status.code().unwrap_or(1))
+    }
+
+    Ok(())
+}
+
 /// Execute a doctest in Node.js using fallback mode (without wasm-bindgen processing).
 ///
 /// This is used when wasm-bindgen CLI fails to process the wasm file (e.g., when the
