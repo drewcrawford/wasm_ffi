@@ -3,6 +3,22 @@
 
 ## Unreleased
 
+### Added
+
+* Added the `web` and `node` targets to the `--experimental-reset-state-function` flag.
+  [#4909](https://github.com/wasm-bindgen/wasm-bindgen/pull/4909)
+
+### Changed
+
+* `global` does not use the unsafe-eval `new Function` trick anymore allowing to have CSP strict compliant packages with `wasm-bindgen`.
+  #[4910](https://github.com/wasm-bindgen/wasm-bindgen/pull/4910)
+
+### Fixed
+
+### Removed
+
+## [0.2.108](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.107...0.2.108)
+
 ### Fixed
 
 * Fixed regression where `panic=unwind` builds for non-Wasm targets would trigger `UnwindSafe` assertions.
