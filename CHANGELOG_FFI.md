@@ -23,10 +23,6 @@ This enables spawning worker threads that share memory with the main thread.
 
 See `examples/nodejs-threads` for a complete example.
 
-# shared-memory-growth-fix
-
-Fix memory growth detection for SharedArrayBuffer. Previously, cached TypedArray views compared `buffer` reference, but SharedArrayBuffer keeps the same reference when grown. Now compares `byteLength` instead, correctly detecting growth and refreshing cached views.
-
 # worker-panic-capture
 
 Improve panic capture from worker threads in browser tests. Panics from dedicated workers and shared workers are now properly captured and reported.

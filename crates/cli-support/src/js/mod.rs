@@ -2330,10 +2330,10 @@ if (require('worker_threads').isMainThread) {{
             let cache = format!("cached{kind}Memory{}", view.num);
             let resized_check = if self.module.memories.get(memory).shared {
                 // When it's backed by a `SharedArrayBuffer`, growing the Wasm module's memory
-                // doesn't detach old references; it keeps the same buffer object.
-                // The TypedArray view's byteLength is fixed at construction, while the
-                // underlying buffer grows. Compare these to detect growth.
-                format!("{cache}.byteLength !== wasm.{mem}.buffer.byteLength")
+                // doesn't detach old references; instead, it just leaves them pointing to a
+                // slice of the up-to-date memory. So in order to check if it's been grown, we
+                // have to compare it to the up-to-date buffer.
+                format!("{cache}.buffer !== wasm.{mem}.buffer")
             } else if kind == "DataView" {
                 // `DataView`s throw when accessing detached memory, including `byteLength`.
                 // However this requires JS engine support, so we fallback to comparing the buffer.
