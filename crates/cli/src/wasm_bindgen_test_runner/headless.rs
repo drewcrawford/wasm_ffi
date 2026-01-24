@@ -1,5 +1,5 @@
 use super::shell::Shell;
-use anyhow::{bail, format_err, Context, Error};
+use anyhow::{bail, Context, Error};
 use log::{debug, warn};
 use rouille::url::Url;
 use serde::{Deserialize, Serialize};
@@ -163,9 +163,6 @@ pub fn run(
     shell.status(&format!("Visiting {url}..."));
     client.goto(&id, &url)?;
     shell.status("Loading page elements...");
-    let output = client.element(&id, "#output")?;
-    let logs = client.element(&id, "#console_log")?;
-    let errors = client.element(&id, "#console_error")?;
 
     // At this point we need to wait for the test to finish before we can take a
     // look at what happened. There appears to be no great way to do this with
@@ -183,42 +180,65 @@ pub fn run(
     shell.status("Waiting for test to finish...");
     let start = Instant::now();
     let max = Duration::new(test_timeout, 0);
+    let mut shell_cleared = false;
+    let mut output_buf = String::new();
     while start.elapsed() < max {
-        if client.text(&id, &output)?.contains("test result: ") {
+        let new_output = client.text_content(&id, "#output", output_buf.len())?;
+
+        // Print new output as it appears (real-time streaming)
+        if !new_output.is_empty() {
+            // Clear shell status before first output so they don't mix
+            if !shell_cleared {
+                shell.clear();
+                shell_cleared = true;
+            }
+            io::stdout().lock().write_all(new_output.as_bytes())?;
+            output_buf.push_str(&new_output);
+        }
+
+        if output_buf.contains("test result: ") {
             break;
         }
         thread::sleep(Duration::from_millis(100));
     }
-    shell.clear();
+    if !shell_cleared {
+        shell.clear();
+    }
 
-    // Tests have now finished or have timed out. At this point we need to print
-    // what happened on the console. Currently we just do this by scraping the
-    // output of various fields and printing them out, hopefully providing
-    // enough diagnostic info to see what went wrong (if anything).
-    let output = client.text(&id, &output)?;
-    let logs = client.text(&id, &logs)?;
-    let errors = client.text(&id, &errors)?;
+    // Tests have now finished or have timed out. At this point we need to check
+    // what happened. Output was already streamed in real-time above.
 
-    if output.contains("test result: ") {
-        println!("{output}");
+    // Print any remaining output that might have arrived after the last poll
+    let remaining_output = client.text_content(&id, "#output", output_buf.len())?;
+    if !remaining_output.is_empty() {
+        io::stdout().lock().write_all(remaining_output.as_bytes())?;
+        output_buf.push_str(&remaining_output);
+    }
 
+    if output_buf.contains("test result: ") {
         // If the tests harness finished (either successfully or unsuccessfully)
         // then in theory all the info needed to debug the failure is in its own
         // output, so we shouldn't need the driver logs to get printed.
         drop_log();
     } else {
         println!("Failed to detect test as having been run. It might have timed out.");
-        if !output.is_empty() {
-            println!("output div contained:\n{}", tab(&output));
-        }
     }
 
-    if !output.contains("test result: ok") {
-        if !logs.is_empty() {
-            println!("console.log div contained:\n{}", tab(&logs));
-        }
-        if !errors.is_empty() {
-            println!("console.log div contained:\n{}", tab(&errors));
+    if !output_buf.contains("test result: ok") {
+        // Read console output incrementally to avoid exceeding WebDriver response limits
+        let mut has_console = false;
+        let mut console_offset = 0;
+        loop {
+            let chunk = client.text_content(&id, "#console_output", console_offset)?;
+            if chunk.is_empty() {
+                break;
+            }
+            if !has_console {
+                println!("console output:");
+                has_console = true;
+            }
+            io::stdout().lock().write_all(tab(&chunk).as_bytes())?;
+            console_offset += chunk.len();
         }
 
         bail!("some tests failed")
@@ -359,7 +379,6 @@ struct Client {
 }
 
 enum Method<'a> {
-    Get,
     Post(&'a str),
     Delete,
 }
@@ -514,51 +533,29 @@ impl Client {
         Ok(())
     }
 
-    fn element(&mut self, id: &str, selector: &str) -> Result<String, Error> {
+    fn text_content(&mut self, id: &str, selector: &str, offset: usize) -> Result<String, Error> {
         #[derive(Serialize)]
         struct Request {
-            using: String,
-            value: String,
+            script: String,
+            args: Vec<usize>,
         }
         #[derive(Deserialize)]
         struct Response {
-            value: Reference,
+            value: serde_json::Value,
         }
-        #[derive(Deserialize)]
-        struct Reference {
-            #[serde(rename = "element-6066-11e4-a52e-4f735466cecf")]
-            gecko_reference: Option<String>,
-            #[serde(rename = "ELEMENT")]
-            safari_reference: Option<String>,
-        }
-
         let request = Request {
-            using: "css selector".to_string(),
-            value: selector.to_string(),
+            script: format!(
+                "return document.querySelector({}).textContent.slice(arguments[0])",
+                serde_json::to_string(selector)?
+            ),
+            args: vec![offset],
         };
-        let x: Response = self.post(&format!("/session/{id}/element"), &request)?;
-        x.value
-            .gecko_reference
-            .or(x.value.safari_reference)
-            .ok_or(format_err!("failed to find element reference in response"))
-    }
-
-    fn text(&mut self, id: &str, element: &str) -> Result<String, Error> {
-        #[derive(Deserialize)]
-        struct Response {
-            value: String,
+        let x: Response = self.post(&format!("/session/{id}/execute/sync"), &request)?;
+        match x.value {
+            serde_json::Value::String(s) => Ok(s),
+            serde_json::Value::Null => Ok(String::new()),
+            other => bail!("unexpected response from execute/sync: {other:?}"),
         }
-        let x: Response = self.get(&format!("/session/{id}/element/{element}/text"))?;
-        Ok(x.value)
-    }
-
-    fn get<U>(&mut self, path: &str) -> Result<U, Error>
-    where
-        U: for<'a> Deserialize<'a>,
-    {
-        debug!("GET {path}");
-        let result = self.doit(path, Method::Get)?;
-        Ok(serde_json::from_str(&result)?)
     }
 
     fn post<T, U>(&mut self, path: &str, data: &T) -> Result<U, Error>
@@ -590,7 +587,6 @@ impl Client {
                 .content_type("application/json")
                 .send(data.as_bytes())?,
             Method::Delete => self.agent.delete(url.as_str()).call()?,
-            Method::Get => self.agent.get(url.as_str()).call()?,
         };
 
         let response_code = response.status();

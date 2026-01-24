@@ -1,3 +1,54 @@
+# Fork manifesto
+
+This is a fork of wasm-bindgen.  Goals:
+
+a) high velocity; unblock first, ask questions later
+
+b) support "modern" workloads like multicore atomics, log-based debugging, or whatever your browser of choice broke this week.
+
+c) more predictable crates.io release schedule
+
+d) landing pad for things we'd all like in wasm-bindgen, but may benefit from incubation inside a higher-velocity fork
+
+e) identical license with both wasm-bindgen, and also rust. So legally any code could flow both to wasm-bindgen, and subsequently, to rust itself.
+
+## Sunset
+
+This fork will have at least three monthly releases:
+
+1.x - January 2026
+
+
+2.x - February 2026
+
+3.x - March 2026, assuming breaking changes are needed
+
+In April, we'll see if upstream has merged our patches or if we need to order another quarter of releases.
+
+# SLA
+
+This fork will release one new major version every month, in the first week of that month.  (Or a minor version, if no breaking changes were submitted.)
+
+During the first week of a month I will update [my crates](https://crates.io/users/drewcrawford) to target the new release.
+
+In addition I will rapidly fire point releases as soon as possible.
+
+## PR SLA
+
+Obviously, try upstream first or in parallel.  If you're reading this, you might be somehow disillusioned on that path.
+
+If you send me a PR that seems to pass CI and merge cleanly, I guarantee that I will merge it.  In case you don't want your actual feature to get broken later, consider writing better automated tests, which would benefit everybody.
+
+For non-breaking changes, this will likely be the fastest review process you'll ever encounter.
+
+For breaking changes, the merge window will be the last week of each month, when the monthly breakage has been scheduled. Review criteria will be similar, if it appears to pass CI I will try to merge it in that window.
+
+On some roughly monthly cadence I will attempt to merge upstream's changes.  But they've [failed my CI tests](https://github.com/wasm-bindgen/wasm-bindgen/pull/4875#issuecomment-3675267028) for over a week now, so I guess we'll see how that goes.
+
+---
+
+# Original wasm-bindgen README
+
 <div align="center">
 
   <h1><code>wasm-bindgen</code></h1>

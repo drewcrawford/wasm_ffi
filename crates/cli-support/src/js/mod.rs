@@ -1029,13 +1029,13 @@ import {{ isMainThread }} from 'node:worker_threads';
 
 let wasm;
 let wasmModule;
-let memory;
+let __wbg_memory;
 let __initialized = false;
 
 export function initSync(opts = {{}}) {{
     if (__initialized) return wasm;
 
-    let {{ module, memory: mem, thread_stack_size }} = opts;
+    let {{ module, memory, thread_stack_size }} = opts;
 
     if (module === undefined) {{
         const wasmUrl = new URL('{module_name}_bg.wasm', import.meta.url);
@@ -1048,10 +1048,10 @@ export function initSync(opts = {{}}) {{
         wasmModule = module;
     }}
 
-    const wasmImports = __wbg_get_imports(mem);
+    const wasmImports = __wbg_get_imports(memory);
     const instance = new WebAssembly.Instance(wasmModule, wasmImports);
     wasm = instance.exports;
-    memory = wasm.memory;
+    __wbg_memory = wasmImports['./{module_name}_bg.js'].memory;
 {start_call}
     __initialized = true;
     return wasm;
@@ -1063,7 +1063,7 @@ if (isMainThread) {{
     initSync();
 }}
 
-export {{ wasm as __wasm, wasmModule as __wbg_wasm_module, memory as __wbg_memory, __wbg_get_imports }};
+export {{ wasm as __wasm, wasmModule as __wbindgen_wasm_module, __wbg_memory as memory }};
 "#
             )
         } else {
@@ -1104,7 +1104,6 @@ export {{ wasm as __wasm, wasmModule as __wbg_wasm_module, memory as __wbg_memor
             format!(
                 r#"let wasm;
 let wasmModule;
-let memory;
 let __initialized = false;
 
 // Export __wbg_get_imports for workers to use
@@ -1115,7 +1114,7 @@ exports.initSync = function(opts) {{
     if (__initialized) return wasm;
 
     let module = opts.module;
-    let mem = opts.memory;
+    let memory = opts.memory;
     let thread_stack_size = opts.thread_stack_size;
 
     if (module === undefined) {{
@@ -1129,13 +1128,12 @@ exports.initSync = function(opts) {{
         wasmModule = module;
     }}
 
-    const wasmImports = __wbg_get_imports(mem);
+    const wasmImports = __wbg_get_imports(memory);
     const instance = new WebAssembly.Instance(wasmModule, wasmImports);
     wasm = instance.exports;
-    memory = wasm.memory;
     exports.__wasm = wasm;
-    exports.__wbg_wasm_module = wasmModule;
-    exports.__wbg_memory = memory;
+    exports.__wbindgen_wasm_module = wasmModule;
+    exports.memory = wasmImports['./{module_name}_bg.js'].memory;
 {start_call}
     __initialized = true;
     return wasm;
@@ -1741,6 +1739,17 @@ if (require('worker_threads').isMainThread) {{
     fn expose_wasm_vector_len(&mut self) {
         intrinsic(&mut self.intrinsics, "wasm_vector_len".into(), || {
             "\nlet WASM_VECTOR_LEN = 0;\n".into()
+        });
+    }
+
+    fn expose_panic_error(&mut self) {
+        intrinsic(&mut self.intrinsics, "panic_error".into(), || {
+            "class PanicError extends Error {}
+            Object.defineProperty(PanicError.prototype, 'name', {
+                value: PanicError.name,
+            });
+            "
+            .into()
         });
     }
 
@@ -2810,17 +2819,6 @@ if (require('worker_threads').isMainThread) {{
                     "state => state.dtor(state.a, state.b)"
                 }
             )
-            .into()
-        });
-    }
-
-    fn expose_panic_error(&mut self) {
-        intrinsic(&mut self.intrinsics, "panic_error".into(), || {
-            "class PanicError extends Error {}
-            Object.defineProperty(PanicError.prototype, 'name', {
-                value: PanicError.name,
-            });
-            "
             .into()
         });
     }
@@ -4294,6 +4292,7 @@ if (require('worker_threads').isMainThread) {{
                 }
                 base
             }
+
             Intrinsic::PanicError => {
                 assert_eq!(args.len(), 1);
                 self.expose_panic_error();

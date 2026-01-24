@@ -62,13 +62,13 @@ import { isMainThread } from 'node:worker_threads';
 
 let wasm;
 let wasmModule;
-let memory;
+let __wbg_memory;
 let __initialized = false;
 
 export function initSync(opts = {}) {
     if (__initialized) return wasm;
 
-    let { module, memory: mem, thread_stack_size } = opts;
+    let { module, memory, thread_stack_size } = opts;
 
     if (module === undefined) {
         const wasmUrl = new URL('reference_test_bg.wasm', import.meta.url);
@@ -81,10 +81,10 @@ export function initSync(opts = {}) {
         wasmModule = module;
     }
 
-    const wasmImports = __wbg_get_imports(mem);
+    const wasmImports = __wbg_get_imports(memory);
     const instance = new WebAssembly.Instance(wasmModule, wasmImports);
     wasm = instance.exports;
-    memory = wasm.memory;
+    __wbg_memory = wasmImports['./reference_test_bg.js'].memory;
 
     if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) { throw new Error('invalid stack size'); }
     wasm.__wbindgen_start(thread_stack_size);
@@ -98,4 +98,4 @@ if (isMainThread) {
     initSync();
 }
 
-export { wasm as __wasm, wasmModule as __wbg_wasm_module, memory as __wbg_memory, __wbg_get_imports };
+export { wasm as __wasm, wasmModule as __wbindgen_wasm_module, __wbg_memory as memory };
