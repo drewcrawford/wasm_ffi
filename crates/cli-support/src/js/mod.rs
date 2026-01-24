@@ -1014,7 +1014,7 @@ export {{ wasm as __wasm, wasmModule as __wbindgen_wasm_module, __wbg_memory as 
             const wasmUrl = new URL('{module_name}_bg.wasm', import.meta.url);
             const wasmBytes = readFileSync(wasmUrl);
             const wasmModule = new WebAssembly.Module(wasmBytes);
-            const wasm = new WebAssembly.Instance(wasmModule, __wbg_get_imports()).exports;
+            let wasm = new WebAssembly.Instance(wasmModule, __wbg_get_imports()).exports;
             {start}"#,
                 start = if needs_manual_start {
                     "wasm.__wbindgen_start();\n"
@@ -1093,7 +1093,7 @@ if (require('worker_threads').isMainThread) {{
                 r#"const wasmPath = `${{__dirname}}/{module_name}_bg.wasm`;
             const wasmBytes = require('fs').readFileSync(wasmPath);
             const wasmModule = new WebAssembly.Module(wasmBytes);
-            const wasm = new WebAssembly.Instance(wasmModule, __wbg_get_imports()).exports;
+            let wasm = new WebAssembly.Instance(wasmModule, __wbg_get_imports()).exports;
             {start}"#,
                 start = if needs_manual_start {
                     "wasm.__wbindgen_start();\n"
