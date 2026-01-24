@@ -483,6 +483,15 @@ impl<'a> Context<'a> {
             ts.push_str(&init_ts);
         }
 
+        // Generate TypeScript definitions for Node.js with threads enabled
+        if self.config.typescript
+            && matches!(self.config.mode, OutputMode::Node { .. })
+            && self.threads_enabled
+        {
+            let node_atomics_ts = self.ts_for_node_atomics()?;
+            ts.push_str(&node_atomics_ts);
+        }
+
         Ok((self.globals.to_owned(), ts, start))
     }
 
@@ -710,6 +719,55 @@ impl<'a> Context<'a> {
         ))
     }
 
+    /// Generate TypeScript definitions for Node.js targets with threads/atomics enabled.
+    fn ts_for_node_atomics(&self) -> Result<String, Error> {
+        let output = crate::wasm2es6js::interface(self.module)?;
+
+        Ok(format!(
+            r#"
+export type SyncInitInput = BufferSource | WebAssembly.Module;
+
+export interface InitOutput {{
+{output}}}
+
+export interface InitSyncOptions {{
+    module?: SyncInitInput;
+    memory?: WebAssembly.Memory;
+    thread_stack_size?: number;
+}}
+
+/**
+ * Initialize the WebAssembly module synchronously.
+ *
+ * For the main thread, this is called automatically on import.
+ * Worker threads should call this explicitly with shared module and memory:
+ *
+ * ```js
+ * initSync({{ module: __wbg_wasm_module, memory: __wbg_memory }});
+ * ```
+ *
+ * @param opts - Initialization options
+ * @returns The exports object
+ */
+export function initSync(opts?: InitSyncOptions): InitOutput;
+
+/**
+ * Get the imports object for WebAssembly instantiation.
+ *
+ * @param memory - Optional shared memory to use instead of creating new
+ * @returns The imports object for WebAssembly.Instance
+ */
+export function __wbg_get_imports(memory?: WebAssembly.Memory): WebAssembly.Imports;
+
+/** The compiled WebAssembly module. Can be shared with workers. */
+export const __wbg_wasm_module: WebAssembly.Module;
+
+/** The shared WebAssembly memory. */
+export const __wbg_memory: WebAssembly.Memory;
+"#
+        ))
+    }
+
     fn generate_module_wasm_loading(&self, module_name: &str, needs_manual_start: bool) -> String {
         format!(
             r#"import source wasmModule from "./{module_name}_bg.wasm";
@@ -911,7 +969,7 @@ impl<'a> Context<'a> {
             init_stack_size_check = if self.threads_enabled {
                 format!(
                     "if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % {} !== 0)) {{
-                        throw 'invalid stack size';
+                        throw new Error('invalid stack size');
                     }}\n",
                     threads_xform::PAGE_SIZE,
                 )
