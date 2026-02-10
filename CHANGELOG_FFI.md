@@ -23,6 +23,10 @@ This enables spawning worker threads that share memory with the main thread.
 
 See `examples/nodejs-threads` for a complete example.
 
+# macOS-fix
+
+Fixed a macOS-specific build failure in `tests/no_interpret.rs` by making the link section platform-aware. Supporting both macOS (`__DATA,__mod_init_func`) and other platforms (`.init_array`).
+
 # worker-panic-capture
 
 Improve panic capture from worker threads in browser tests. Panics from dedicated workers and shared workers are now properly captured and reported.
