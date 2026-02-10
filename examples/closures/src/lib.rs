@@ -7,8 +7,13 @@ fn run() -> Result<(), JsValue> {
     let window = web_sys::window().expect("should have a window in this context");
     let document = window.document().expect("window should have a document");
 
-    // One of the first interesting things we can do with closures is simply
-    // access stack data in Rust!
+    // Demonstrate ScopedClosure for immediate callbacks.
+    // This is the recommended way to pass closures to JS for synchronous use.
+    // The closure can capture local references and is automatically cleaned up.
+    demonstrate_scoped_closure();
+
+    // Note: js_sys::Array::for_each currently still uses the old `&mut dyn FnMut`
+    // pattern, which will be migrated to Closure in a future release.
     let array = Array::new();
     array.push(&"Hello".into());
     array.push(&1.into());
@@ -83,6 +88,44 @@ fn setup_clock(window: &Window, document: &Document) -> Result<(), JsValue> {
     a.forget();
 
     Ok(())
+}
+
+// Demonstrate ScopedClosure for immediate/synchronous callbacks.
+//
+// Use ScopedClosure::borrow (for Fn) or ScopedClosure::borrow_mut (for FnMut) when
+// JavaScript will call the closure immediately and won't retain it. Benefits:
+// - Can capture non-'static references (like &mut local_var)
+// - Automatic cleanup when ScopedClosure is dropped
+// - Lifetime safety: ScopedClosure can't outlive the closure's captured data
+// - Unwind safe (panics become JS exceptions)
+fn demonstrate_scoped_closure() {
+    #[wasm_bindgen(inline_js = r#"
+        export function callThreeTimes(cb) {
+            cb(1);
+            cb(2);
+            cb(3);
+        }
+    "#)]
+    extern "C" {
+        // This JS function calls the callback immediately, three times
+        fn callThreeTimes(cb: &ScopedClosure<dyn FnMut(u32)>);
+    }
+
+    // Example: Using ScopedClosure::borrow_mut to sum values
+    // The closure captures &mut sum without requiring 'static
+    let mut sum = 0u32;
+
+    {
+        let mut func = |value: u32| {
+            sum += value;
+        };
+        let closure = ScopedClosure::borrow_mut(&mut func);
+        // Pass the closure to JavaScript - it will be called synchronously
+        // and then invalidated when closure is dropped
+        callThreeTimes(&closure);
+    }
+
+    assert_eq!(sum, 6);
 }
 
 // We also want to count the number of times that our green square has been

@@ -5,8 +5,47 @@
 
 ### Added
 
+* Implement `#[wasm_bindgen(catch)]` exception handling directly in Wasm using
+  `WebAssembly.JSTag` when Wasm exception handling is available. This generates
+  smaller and faster code by avoiding JavaScript `handleError` wrapper functions.
+  [#4942](https://github.com/wasm-bindgen/wasm-bindgen/pull/4942)
+
+* Added `ScopedClosure<'a, T>` as a unified closure type with lifetime parameter. `ScopedClosure::borrow(&f)` and `ScopedClosure::borrow_mut(&mut f)` create borrowed closures that can capture non-`'static` references, ideal for immediate/synchronous JS callbacks. `Closure<T>` and `StaticClosure<T>` are now type aliases for `ScopedClosure<'static, T>`, maintaining full backwards compatibility. Also added `IntoWasmAbi` implementation for `Closure<T>` enabling pass-by-value ownership transfer to JavaScript.
+
+* Add Node.js `worker_threads` support for atomics builds. When targeting Node.js with atomics enabled, wasm-bindgen now generates `initSync({ module, memory, thread_stack_size })` and `__wbg_get_imports(memory)` functions that allow worker threads to initialize with a shared WebAssembly.Memory and pre-compiled module. Auto-initialization occurs only on the main thread for backwards compatibility.
+
 * Added the `web` and `node` targets to the `--experimental-reset-state-function` flag.
   [#4909](https://github.com/wasm-bindgen/wasm-bindgen/pull/4909)
+
+* Added support for WebIDL namespace attributes in `wasm-bindgen-webidl`. This enables
+  APIs like the CSS Custom Highlight API which adds the `highlights` attribute to the `CSS` namespace.
+  [#4930](https://github.com/wasm-bindgen/wasm-bindgen/issues/4930)
+
+* Added `oncancel` event handler to `GlobalEventHandlers` (available on `HtmlElement`,
+  `Document`, `Window`, etc.).
+  [#4542](https://github.com/wasm-bindgen/wasm-bindgen/pull/4542)
+
+* Added `CommandEvent` and `CommandEventInit` from the Invoker Commands API.
+  [#4552](https://github.com/wasm-bindgen/wasm-bindgen/pull/4552)
+
+* Updated WebCodecs API to Working Draft 2026-01-29 and MediaRecorder API to 2025-04-17.
+  Added `rotation` and `flip` to `VideoDecoderConfig`.
+  [#4411](https://github.com/wasm-bindgen/wasm-bindgen/pull/4411)
+
+* Added support for unstable WebIDL to override stable attribute types, allowing
+  corrected type signatures behind `web_sys_unstable_apis`. Applied to `MouseEvent`
+  coordinate attributes (`clientX`, `clientY`, `screenX`, `screenY`, `offsetX`,
+  `offsetY`, `pageX`, `pageY`) which now return `f64` instead of `i32` when
+  unstable APIs are enabled, per the CSSOM View spec draft.
+  [#4935](https://github.com/wasm-bindgen/wasm-bindgen/pull/4935)
+
+* Added non-standard `mode` option for `FileSystemFileHandle.createSyncAccessHandle()`.
+  Also improved WebIDL generator to track stability at the signature level, allowing
+  stable methods to have unstable overloads.
+  [#4928](https://github.com/wasm-bindgen/wasm-bindgen/issues/4928)
+
+* Added a panic message when a getter as more than one argument. 
+  [#4936](https://github.com/wasm-bindgen/wasm-bindgen/pull/4936)
 
 ### Changed
 
@@ -20,6 +59,15 @@
   [#4914](https://github.com/wasm-bindgen/wasm-bindgen/pull/4914)
 
 ### Fixed
+
+* Fixed `ReferenceError` when using Rust struct names that conflict with JS builtins (e.g., `Array`).
+  The constructor now correctly uses the aliased `FinalizationRegistry` identifier.
+  [#4932](https://github.com/wasm-bindgen/wasm-bindgen/pull/4932)
+
+* Fixed `unfulfilled_lint_expectations` warnings when using `#[expect(...)]` attributes
+  on functions annotated with `#[wasm_bindgen]`. The `#[expect]` attributes are now
+  converted to `#[allow]` in generated code to prevent spurious warnings.
+  [#4409](https://github.com/wasm-bindgen/wasm-bindgen/pull/4409)
 
 ### Removed
 
@@ -103,6 +151,9 @@
 
 * New MSRV policy, and bump of the MSRV fo 1.71.
   [#4801](https://github.com/wasm-bindgen/wasm-bindgen/pull4801)
+
+* Added `CSS Custom Highlight` API to `web-sys`.
+  [#4792](https://github.com/wasm-bindgen/wasm-bindgen/pull/4792)
 
 * Added typed `this` support in the first argument in free function exports via
   a new `#[wasm_bindgen(this)]` attribute.

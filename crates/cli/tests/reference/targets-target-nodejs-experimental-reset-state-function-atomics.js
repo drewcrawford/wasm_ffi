@@ -73,6 +73,7 @@ function decodeText(ptr, len) {
 
 let wasm;
 let wasmModule;
+let memory;
 let __initialized = false;
 
 // Export __wbg_get_imports for workers to use
@@ -83,7 +84,7 @@ exports.initSync = function(opts) {
     if (__initialized) return wasm;
 
     let module = opts.module;
-    let memory = opts.memory;
+    let mem = opts.memory;
     let thread_stack_size = opts.thread_stack_size;
 
     if (module === undefined) {
@@ -97,14 +98,17 @@ exports.initSync = function(opts) {
         wasmModule = module;
     }
 
-    const wasmImports = __wbg_get_imports(memory);
+    const wasmImports = __wbg_get_imports(mem);
     const instance = new WebAssembly.Instance(wasmModule, wasmImports);
     wasm = instance.exports;
+    memory = wasmImports['./reference_test_bg.js'].memory;
     exports.__wasm = wasm;
-    exports.__wbindgen_wasm_module = wasmModule;
-    exports.memory = wasmImports['./reference_test_bg.js'].memory;
+    exports.__wbg_wasm_module = wasmModule;
+    exports.__wbg_memory = memory;
 
-    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) { throw new Error('invalid stack size'); }
+    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) {
+        throw new Error('invalid stack size');
+    }
     wasm.__wbindgen_start(thread_stack_size);
     __initialized = true;
     return wasm;

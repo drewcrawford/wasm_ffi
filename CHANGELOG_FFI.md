@@ -11,7 +11,7 @@ Now doctests are detected and executed properly. Supports:
 - Shared worker (`wasm_bindgen_test_configure!(run_in_shared_worker)`)
 - Service worker (`wasm_bindgen_test_configure!(run_in_service_worker)`)
 
-# nodejs-threads
+# nodejs-threads (UPSTREAMED)
 
 Add Node.js `worker_threads` support for atomics builds. Supports both CommonJS (`--target nodejs`) and ESM (`--target experimental-nodejs-module`) targets. When targeting Node.js with atomics enabled, wasm-bindgen now generates:
 
@@ -22,6 +22,10 @@ Add Node.js `worker_threads` support for atomics builds. Supports both CommonJS 
 This enables spawning worker threads that share memory with the main thread.
 
 See `examples/nodejs-threads` for a complete example.
+
+# macOS-fix
+
+Fixed a macOS-specific build failure in `tests/no_interpret.rs` by making the link section platform-aware. Supporting both macOS (`__DATA,__mod_init_func`) and other platforms (`.init_array`).
 
 # worker-panic-capture
 

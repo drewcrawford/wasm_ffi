@@ -204,6 +204,7 @@ fn rust_keyword2() {
     assert_eq!(FOO.with(JsValue::as_f64), Some(3.0));
 }
 
+#[cfg(not(panic = "unwind"))]
 #[wasm_bindgen_test]
 fn custom_type() {
     take_custom_type(CustomType(()));

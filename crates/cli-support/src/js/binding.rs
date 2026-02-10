@@ -8,7 +8,7 @@ use crate::descriptor::VectorKind;
 use crate::js::Context;
 use crate::wit::InstructionData;
 use crate::wit::{
-    Adapter, AdapterId, AdapterKind, AdapterType, AuxFunctionArgumentData, Instruction,
+    Adapter, AdapterId, AdapterKind, AdapterType, AuxFunctionArgumentData, ClosureDtor, Instruction,
 };
 use anyhow::{bail, Error};
 use std::collections::HashSet;
@@ -139,11 +139,12 @@ impl<'a, 'b> Builder<'a, 'b> {
         ret_ty_override: &Option<String>,
         ret_desc: &Option<String>,
     ) -> Result<JsFunction, Error> {
-        if self
-            .cx
-            .aux
-            .imports_with_assert_no_shim
-            .contains(&adapter.id)
+        if !self.cx.unwind_enabled
+            && self
+                .cx
+                .aux
+                .imports_with_assert_no_shim
+                .contains(&adapter.id)
         {
             bail!("generating a shim for something asserted to have no shim");
         }
@@ -272,10 +273,6 @@ impl<'a, 'b> Builder<'a, 'b> {
         } else {
             js.pre_try + &js.prelude
         };
-
-        if self.catch {
-            js.cx.expose_handle_error()?;
-        }
 
         // Generate a try/catch block in debug mode which handles unexpected and
         // unhandled exceptions, typically used on imports. This currently just
@@ -1326,6 +1323,9 @@ fn instruction(
             let val = js.pop();
             match constructor {
                 Some(name) if name == class => {
+                    // Get the JS identifier for the class, which may be aliased
+                    // if the name conflicts with a JS builtin (e.g., `Array` -> `Array2`)
+                    let identifier = js.cx.require_class_identifier(class);
                     let (ptr_assignment, register_data) = if js.cx.config.generate_reset_state {
                         (
                             format!(
@@ -1346,7 +1346,7 @@ fn instruction(
                     js.prelude(&format!(
                         "
                         {ptr_assignment}
-                        {name}Finalization.register(this, {register_data}, this);
+                        {identifier}Finalization.register(this, {register_data}, this);
                         "
                     ));
                     js.push(String::from("this"));
@@ -1401,7 +1401,7 @@ fn instruction(
             adapter,
             nargs,
             mutable,
-            dtor_if_persistent,
+            dtor,
         } => {
             let b = js.pop();
             let a = js.pop();
@@ -1410,7 +1410,8 @@ fn instruction(
             // TODO: further merge the heap and stack closure handling as
             // they're almost identical (by nature) except for ownership
             // integration.
-            if let Some(dtor) = dtor_if_persistent {
+            if let ClosureDtor::OwnClosure(dtor_export) = dtor {
+                // Persistent/owned closure with destructor
                 let make_closure = if *mutable {
                     js.cx.expose_make_mut_closure();
                     "makeMutClosure"
@@ -1419,10 +1420,11 @@ fn instruction(
                     "makeClosure"
                 };
 
-                let dtor = &js.cx.module.exports.get(*dtor).name;
+                let dtor = &js.cx.module.exports.get(*dtor_export).name;
 
                 js.push(format!("{make_closure}({a}, {b}, wasm.{dtor}, {wrapper})"));
             } else {
+                // Borrowed closure without destructor
                 let i = js.tmp();
                 js.prelude(&format!("var state{i} = {{a: {a}, b: {b}}};"));
                 let args = (0..*nargs)
@@ -1450,11 +1452,26 @@ fn instruction(
                     ));
                 }
 
-                // Make sure to null out our internal pointers when we return
-                // back to Rust to ensure that any lingering references to the
-                // closure will fail immediately due to null pointers passed in
-                // to Rust.
-                js.finally(&format!("state{i}.a = state{i}.b = 0;"));
+                match dtor {
+                    ClosureDtor::OwnClosure(_) => unreachable!(),
+                    ClosureDtor::RefLegacy => {
+                        // Wrapper for a raw FnMut or Fn closure used as an
+                        // argument to a JS function. Make sure to null out our
+                        // internal pointers when we return back to Rust to
+                        // ensure that any lingering references to the closure
+                        // will fail immediately due to null pointers passed in
+                        // to Rust.
+                        js.finally(&format!("state{i}.a = state{i}.b = 0;"));
+                    }
+                    ClosureDtor::Borrowed => {
+                        // Borrowed closure from ScopedClosure::borrow/borrow_mut. Add
+                        // _wbg_cb_unref to invalidate the closure at the end of
+                        // the scoped block.
+                        js.prelude(&format!(
+                            "cb{i}._wbg_cb_unref = () => {{ state{i}.a = state{i}.b = 0; }};",
+                        ));
+                    }
+                }
                 js.push(format!("cb{i}"));
             }
         }

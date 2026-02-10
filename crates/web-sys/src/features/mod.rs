@@ -747,6 +747,13 @@ mod gen_BiquadFilterType;
 #[allow(unused_imports)]
 pub use gen_BiquadFilterType::*;
 
+#[cfg(feature = "BitrateMode")]
+#[allow(non_snake_case)]
+mod gen_BitrateMode;
+#[cfg(feature = "BitrateMode")]
+#[allow(unused_imports)]
+pub use gen_BitrateMode::*;
+
 #[cfg(feature = "Blob")]
 #[allow(non_snake_case)]
 mod gen_Blob;
@@ -1264,6 +1271,20 @@ mod gen_ColorSpaceConversion;
 #[cfg(feature = "ColorSpaceConversion")]
 #[allow(unused_imports)]
 pub use gen_ColorSpaceConversion::*;
+
+#[cfg(feature = "CommandEvent")]
+#[allow(non_snake_case)]
+mod gen_CommandEvent;
+#[cfg(feature = "CommandEvent")]
+#[allow(unused_imports)]
+pub use gen_CommandEvent::*;
+
+#[cfg(feature = "CommandEventInit")]
+#[allow(non_snake_case)]
+mod gen_CommandEventInit;
+#[cfg(feature = "CommandEventInit")]
+#[allow(unused_imports)]
+pub use gen_CommandEventInit::*;
 
 #[cfg(feature = "Comment")]
 #[allow(non_snake_case)]
@@ -2840,6 +2861,20 @@ mod gen_FileSystemSyncAccessHandle;
 #[allow(unused_imports)]
 pub use gen_FileSystemSyncAccessHandle::*;
 
+#[cfg(feature = "FileSystemSyncAccessHandleMode")]
+#[allow(non_snake_case)]
+mod gen_FileSystemSyncAccessHandleMode;
+#[cfg(feature = "FileSystemSyncAccessHandleMode")]
+#[allow(unused_imports)]
+pub use gen_FileSystemSyncAccessHandleMode::*;
+
+#[cfg(feature = "FileSystemSyncAccessHandleOptions")]
+#[allow(non_snake_case)]
+mod gen_FileSystemSyncAccessHandleOptions;
+#[cfg(feature = "FileSystemSyncAccessHandleOptions")]
+#[allow(unused_imports)]
+pub use gen_FileSystemSyncAccessHandleOptions::*;
+
 #[cfg(feature = "FileSystemWritableFileStream")]
 #[allow(non_snake_case)]
 mod gen_FileSystemWritableFileStream;
@@ -4176,6 +4211,41 @@ mod gen_HiddenPluginEventInit;
 #[cfg(feature = "HiddenPluginEventInit")]
 #[allow(unused_imports)]
 pub use gen_HiddenPluginEventInit::*;
+
+#[cfg(feature = "Highlight")]
+#[allow(non_snake_case)]
+mod gen_Highlight;
+#[cfg(feature = "Highlight")]
+#[allow(unused_imports)]
+pub use gen_Highlight::*;
+
+#[cfg(feature = "HighlightHitResult")]
+#[allow(non_snake_case)]
+mod gen_HighlightHitResult;
+#[cfg(feature = "HighlightHitResult")]
+#[allow(unused_imports)]
+pub use gen_HighlightHitResult::*;
+
+#[cfg(feature = "HighlightRegistry")]
+#[allow(non_snake_case)]
+mod gen_HighlightRegistry;
+#[cfg(feature = "HighlightRegistry")]
+#[allow(unused_imports)]
+pub use gen_HighlightRegistry::*;
+
+#[cfg(feature = "HighlightType")]
+#[allow(non_snake_case)]
+mod gen_HighlightType;
+#[cfg(feature = "HighlightType")]
+#[allow(unused_imports)]
+pub use gen_HighlightType::*;
+
+#[cfg(feature = "HighlightsFromPointOptions")]
+#[allow(non_snake_case)]
+mod gen_HighlightsFromPointOptions;
+#[cfg(feature = "HighlightsFromPointOptions")]
+#[allow(unused_imports)]
+pub use gen_HighlightsFromPointOptions::*;
 
 #[cfg(feature = "History")]
 #[allow(non_snake_case)]
@@ -10477,6 +10547,13 @@ mod gen_VideoEncoder;
 #[allow(unused_imports)]
 pub use gen_VideoEncoder::*;
 
+#[cfg(feature = "VideoEncoderBitrateMode")]
+#[allow(non_snake_case)]
+mod gen_VideoEncoderBitrateMode;
+#[cfg(feature = "VideoEncoderBitrateMode")]
+#[allow(unused_imports)]
+pub use gen_VideoEncoderBitrateMode::*;
+
 #[cfg(feature = "VideoEncoderConfig")]
 #[allow(non_snake_case)]
 mod gen_VideoEncoderConfig;
@@ -10539,6 +10616,13 @@ mod gen_VideoFrameInit;
 #[cfg(feature = "VideoFrameInit")]
 #[allow(unused_imports)]
 pub use gen_VideoFrameInit::*;
+
+#[cfg(feature = "VideoFrameMetadata")]
+#[allow(non_snake_case)]
+mod gen_VideoFrameMetadata;
+#[cfg(feature = "VideoFrameMetadata")]
+#[allow(unused_imports)]
+pub use gen_VideoFrameMetadata::*;
 
 #[cfg(feature = "VideoMatrixCoefficients")]
 #[allow(non_snake_case)]
