@@ -1,6 +1,6 @@
 /* @ts-self-types="./reference_test.d.ts" */
 
-function __wbg_reset_state() {
+function __wbg_reset_state () {
     __wbg_instance_id++;
     cachedUint8ArrayMemory0 = null;
     if (typeof numBytesDecoded !== 'undefined') numBytesDecoded = 0;
@@ -25,14 +25,14 @@ exports.add_that_might_fail = add_that_might_fail;
 function __wbg_get_imports(memory) {
     const import0 = {
         __proto__: null,
-        __wbg___wbindgen_throw_be289d5034ed271b: function (arg0, arg1) {
+        __wbg___wbindgen_throw_be289d5034ed271b: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_random_e2b253f0e987bd7c: function () {
+        __wbg_random_e2b253f0e987bd7c: function() {
             const ret = Math.random();
             return ret;
         },
-        __wbindgen_init_externref_table: function () {
+        __wbindgen_init_externref_table: function() {
             const table = wasm.__wbindgen_externrefs;
             const offset = table.grow(4);
             table.set(0, undefined);
@@ -41,7 +41,7 @@ function __wbg_get_imports(memory) {
             table.set(offset + 2, true);
             table.set(offset + 3, false);
         },
-        memory: memory || new WebAssembly.Memory({ initial: 18, maximum: 16384, shared: true }),
+        memory: memory || new WebAssembly.Memory({initial:18,maximum:16384,shared:true}),
     };
     return {
         __proto__: null,
@@ -79,7 +79,7 @@ let __initialized = false;
 // Export __wbg_get_imports for workers to use
 exports.__wbg_get_imports = __wbg_get_imports;
 
-exports.initSync = function (opts) {
+exports.initSync = function(opts) {
     if (opts === undefined) opts = {};
     if (__initialized) return wasm;
 
