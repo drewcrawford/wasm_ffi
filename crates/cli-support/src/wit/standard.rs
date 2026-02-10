@@ -96,6 +96,20 @@ pub enum AdapterType {
     NonNull,
 }
 
+/// Describes how a closure's lifetime is managed.
+#[derive(Debug, Clone)]
+pub enum ClosureDtor {
+    /// Persistent/owned closure with a destructor function that will be called
+    /// when the closure is dropped on the JS side.
+    OwnClosure(walrus::ExportId),
+    /// Borrowed closure called from JS (e.g., `forEach` callback). The closure
+    /// is invalidated after the JS call returns by calling `_wbg_cb_unref`.
+    RefLegacy,
+    /// Borrowed closure (`ScopedClosure`) passed to a Rust async import. The closure's lifetime
+    /// is tied to the async call and cleanup is handled on the Rust side.
+    Borrowed,
+}
+
 #[derive(Debug, Clone)]
 pub enum Instruction {
     /// Call the deallocation function.
@@ -331,7 +345,7 @@ pub enum Instruction {
         adapter: AdapterId,
         nargs: usize,
         mutable: bool,
-        dtor_if_persistent: Option<walrus::ExportId>,
+        dtor: ClosureDtor,
     },
     /// pops two i32 data pointers, pushes a vector view
     View {

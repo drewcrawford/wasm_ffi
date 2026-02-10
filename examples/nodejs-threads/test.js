@@ -6,11 +6,12 @@
  * 2. Worker thread initialization with initSync({ module, memory })
  * 3. Shared atomic counter between threads
  * 4. Memory growth detection with SharedArrayBuffer (byteLength fix)
+ * 5. Memory growth visibility from worker threads
  */
 
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 const assert = require('assert');
-const path = require('path');
+
 
 // Path to built WASM module (in dist for CI, pkg for local dev)
 const WASM_PATH = '../dist/nodejs-threads/nodejs_threads.js';
@@ -32,7 +33,7 @@ if (isMainThread) {
         console.log('Test 2: initSync and __wbg_get_imports exports');
         assert.strictEqual(typeof wasm.initSync, 'function', 'initSync should be exported');
         assert.strictEqual(typeof wasm.__wbg_get_imports, 'function', '__wbg_get_imports should be exported');
-        assert.ok(wasm.__wbindgen_wasm_module instanceof WebAssembly.Module, '__wbindgen_wasm_module should be a Module');
+        assert.ok(wasm.__wbg_wasm_module instanceof WebAssembly.Module, '__wbg_wasm_module should be a Module');
         console.log('  ✓ initSync and __wbg_get_imports are exported\n');
 
         // Test 3: Atomic counter starts at 0
@@ -53,8 +54,9 @@ if (isMainThread) {
         const workerResult = await new Promise((resolve, reject) => {
             const worker = new Worker(__filename, {
                 workerData: {
-                    wasmModule: wasm.__wbindgen_wasm_module,
-                    memory: wasm.memory
+                    wasmModule: wasm.__wbg_wasm_module,
+                    memory: wasm.__wbg_memory,
+                    testType: 'basic'
                 }
             });
 
@@ -77,7 +79,7 @@ if (isMainThread) {
 
         // Test 7: Memory growth and cached view invalidation
         console.log('Test 7: Memory growth detection (byteLength fix)');
-        const initialSize = wasm.memory.buffer.byteLength;
+        const initialSize = wasm.__wbg_memory.buffer.byteLength;
         console.log(`  Initial memory size: ${initialSize} bytes`);
 
         // Allocate a large amount to trigger memory growth
@@ -88,7 +90,7 @@ if (isMainThread) {
         const expectedSum = (largeSize - 1) * largeSize / 2; // Sum of 0..n-1 = 4049955000
         assert.strictEqual(sum, expectedSum, `allocate_and_sum should return ${expectedSum}`);
 
-        const finalSize = wasm.memory.buffer.byteLength;
+        const finalSize = wasm.__wbg_memory.buffer.byteLength;
         console.log(`  Final memory size: ${finalSize} bytes`);
 
         if (finalSize > initialSize) {
@@ -97,6 +99,43 @@ if (isMainThread) {
             console.log('  ✓ Memory did not need to grow (already large enough)\n');
         }
 
+        // Test 8: Memory growth visibility from worker threads
+        // This test verifies:
+        // 1. Worker can trigger memory growth via allocations
+        // 2. Main thread sees the memory growth (shared memory)
+        console.log('Test 8: Memory growth visibility from worker');
+        const sizeBeforeWorker = wasm.__wbg_memory.buffer.byteLength;
+        console.log(`  Size before worker: ${sizeBeforeWorker} bytes`);
+
+        const growthResult = await new Promise((resolve, reject) => {
+            const worker = new Worker(__filename, {
+                workerData: {
+                    wasmModule: wasm.__wbg_wasm_module,
+                    memory: wasm.__wbg_memory,
+                    testType: 'memory_growth'
+                }
+            });
+
+            worker.on('message', resolve);
+            worker.on('error', reject);
+            worker.on('exit', (code) => {
+                if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
+            });
+        });
+
+        assert.strictEqual(growthResult.success, true, 'Worker memory growth test should succeed');
+
+        // Verify memory growth from worker is visible to main thread
+        // The worker reports the final size it saw, and main thread should see the same
+        const sizeAfterWorker = wasm.__wbg_memory.buffer.byteLength;
+        assert.strictEqual(sizeAfterWorker, growthResult.finalSize,
+            'Main thread should see same memory size as worker');
+        assert.ok(sizeAfterWorker >= sizeBeforeWorker,
+            'Memory should have grown or stayed same (never shrink)');
+
+        console.log(`  Worker reports final size: ${growthResult.finalSize} bytes`);
+        console.log(`  Main thread now sees: ${sizeAfterWorker} bytes`);
+        console.log('  ✓ Memory growth is visible across threads\n');
         console.log('=== All tests passed! ===');
     }
 
@@ -116,16 +155,29 @@ if (isMainThread) {
             memory: workerData.memory
         });
 
-        // Verify functions work
-        const addResult = wasm.add(4, 6);
+        if (workerData.testType === 'basic') {
+            // Verify functions work
+            const addResult = wasm.add(4, 6);
 
-        // Increment the shared counter
-        wasm.increment();
+            // Increment the shared counter
+            wasm.increment();
 
-        parentPort.postMessage({
-            success: true,
-            addResult: addResult
-        });
+            parentPort.postMessage({
+                success: true,
+                addResult: addResult
+            });
+        } else if (workerData.testType === 'memory_growth') {
+            // Trigger memory growth from worker
+            wasm.allocate_and_sum(50000); // Allocate enough to potentially grow
+
+            // Check final size
+            const finalSize = wasm.__wbg_memory.buffer.byteLength;
+
+            parentPort.postMessage({
+                success: true,
+                finalSize: finalSize
+            });
+        }
     } catch (err) {
         parentPort.postMessage({
             success: false,

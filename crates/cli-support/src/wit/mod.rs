@@ -76,6 +76,7 @@ pub fn process(
     if !cx.start_found {
         cx.discover_main()?;
     }
+    cx.find_exn_store();
 
     cx.verify()?;
 

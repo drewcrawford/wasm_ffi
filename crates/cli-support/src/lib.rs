@@ -348,7 +348,7 @@ impl Bindgen {
             bail!("exported symbol \"default\" not allowed for --target web")
         }
 
-        // Check that reset_state is only used with --target module
+        // Check that reset_state is only used with --target module, web, or node
         if self.generate_reset_state
             && !matches!(
                 self.mode,
@@ -369,12 +369,30 @@ impl Bindgen {
         if !self.keep_lld_exports {
             unexported_unused_lld_things(&mut module);
         }
+        // Quick fix for https://github.com/wasm-bindgen/wasm-bindgen/pull/4931
+        // which is likely a compiler bug
+        {
+            let exn_import = module.imports.iter().find_map(|impt| match impt.kind {
+                walrus::ImportKind::Tag(id)
+                    if impt.module == "env" && impt.name == "__cpp_exception" =>
+                {
+                    Some((impt, id))
+                }
+                _ => None,
+            });
+            if let Some((import, id)) = exn_import {
+                let original_import_id = import.id();
+                let tag = module.tags.get_mut(id);
+                tag.kind = walrus::TagKind::Local;
+                module.imports.delete(original_import_id);
+                module.exports.add("__cpp_exception", tag.id);
+            }
 
-        // We're making quite a few changes, list ourselves as a producer.
-        module
-            .producers
-            .add_processed_by("wasm-bindgen", &wasm_bindgen_shared::version());
-
+            // We're making quite a few changes, list ourselves as a producer.
+            module
+                .producers
+                .add_processed_by("wasm-bindgen", &wasm_bindgen_shared::version());
+        }
         // Parse and remove our custom section before executing descriptors.
         // That includes checking that the binary has the same schema version
         // as this version of the CLI, which is why we do it first - to make
@@ -433,6 +451,11 @@ impl Bindgen {
             multivalue::run(&mut module)
                 .context("failed to transform return pointers into multi-value Wasm")?;
         }
+
+        // Generate Wasm catch wrappers for imports with #[wasm_bindgen(catch)].
+        // This runs after externref processing so that we have access to the
+        // externref table and allocation function.
+        generate_wasm_catch_wrappers(&mut module)?;
 
         // We've done a whole bunch of transformations to the Wasm module, many
         // of which leave "garbage" lying around, so let's prune out all our
@@ -750,6 +773,49 @@ impl Output {
 
         Ok(())
     }
+}
+
+/// Generate Wasm catch wrappers for imports marked with `#[wasm_bindgen(catch)]`.
+///
+/// When exception handling instructions are available in the module, this generates
+/// Wasm wrapper functions that catch JavaScript exceptions using `WebAssembly.JSTag`
+/// instead of relying on JS `handleError` wrappers.
+fn generate_wasm_catch_wrappers(module: &mut Module) -> Result<(), Error> {
+    let eh_version = transforms::detect_exception_handling_version(module);
+    log::debug!("Exception handling version: {eh_version:?}");
+
+    if eh_version == transforms::ExceptionHandlingVersion::None {
+        return Ok(());
+    }
+
+    // We need to temporarily remove the custom sections to avoid borrow issues
+    let mut aux = module
+        .customs
+        .delete_typed::<wit::WasmBindgenAux>()
+        .expect("aux section should exist");
+    let wit = module
+        .customs
+        .delete_typed::<wit::NonstandardWitSection>()
+        .expect("wit section should exist");
+
+    log::debug!(
+        "Running catch handler: imports_with_catch={}, externref_table={:?}, externref_alloc={:?}, exn_store={:?}",
+        aux.imports_with_catch.len(),
+        aux.externref_table,
+        aux.externref_alloc,
+        aux.exn_store
+    );
+
+    let result = transforms::catch_handler::run(module, &mut aux, &wit, eh_version)
+        .context("failed to generate catch wrappers");
+
+    // Re-add the custom sections
+    module.customs.add(*wit);
+    module.customs.add(*aux);
+
+    result?;
+
+    Ok(())
 }
 
 fn gc_module_and_adapters(module: &mut Module) {

@@ -13,14 +13,14 @@ export function add_that_might_fail(a, b) {
 function __wbg_get_imports(memory) {
     const import0 = {
         __proto__: null,
-        __wbg___wbindgen_throw_be289d5034ed271b: function(arg0, arg1) {
+        __wbg___wbindgen_throw_be289d5034ed271b: function (arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_random_e2b253f0e987bd7c: function() {
+        __wbg_random_e2b253f0e987bd7c: function () {
             const ret = Math.random();
             return ret;
         },
-        __wbindgen_init_externref_table: function() {
+        __wbindgen_init_externref_table: function () {
             const table = wasm.__wbindgen_externrefs;
             const offset = table.grow(4);
             table.set(0, undefined);
@@ -29,7 +29,7 @@ function __wbg_get_imports(memory) {
             table.set(offset + 2, true);
             table.set(offset + 3, false);
         },
-        memory: memory || new WebAssembly.Memory({initial:18,maximum:16384,shared:true}),
+        memory: memory || new WebAssembly.Memory({ initial: 18, maximum: 16384, shared: true }),
     };
     return {
         __proto__: null,
@@ -62,13 +62,13 @@ import { isMainThread } from 'node:worker_threads';
 
 let wasm;
 let wasmModule;
-let __wbg_memory;
+let memory;
 let __initialized = false;
 
 export function initSync(opts = {}) {
     if (__initialized) return wasm;
 
-    let { module, memory, thread_stack_size } = opts;
+    let { module, memory: mem, thread_stack_size } = opts;
 
     if (module === undefined) {
         const wasmUrl = new URL('reference_test_bg.wasm', import.meta.url);
@@ -81,12 +81,14 @@ export function initSync(opts = {}) {
         wasmModule = module;
     }
 
-    const wasmImports = __wbg_get_imports(memory);
+    const wasmImports = __wbg_get_imports(mem);
     const instance = new WebAssembly.Instance(wasmModule, wasmImports);
     wasm = instance.exports;
-    __wbg_memory = wasmImports['./reference_test_bg.js'].memory;
+    memory = wasmImports['./reference_test_bg.js'].memory;
 
-    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) { throw new Error('invalid stack size'); }
+    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) {
+        throw new Error('invalid stack size');
+    }
     wasm.__wbindgen_start(thread_stack_size);
     __initialized = true;
     return wasm;
@@ -98,4 +100,4 @@ if (isMainThread) {
     initSync();
 }
 
-export { wasm as __wasm, wasmModule as __wbindgen_wasm_module, __wbg_memory as memory };
+export { wasm as __wasm, wasmModule as __wbg_wasm_module, memory as __wbg_memory, __wbg_get_imports };

@@ -1,6 +1,8 @@
 use crate::descriptor::VectorKind;
 use crate::intrinsic::Intrinsic;
-use crate::transforms::{threads as threads_xform, unstart_start_function};
+use crate::transforms::{
+    has_local_exception_tags, threads as threads_xform, unstart_start_function,
+};
 use crate::wit::{
     Adapter, AdapterId, AdapterJsImportKind, AuxExportedMethodKind, AuxReceiverKind, AuxStringEnum,
     AuxValue,
@@ -19,6 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::{fmt, mem};
 use walrus::{FunctionId, ImportId, MemoryId, Module, TableId, ValType};
+use wasm_bindgen_shared::escape_string;
 use wasm_bindgen_shared::identifier::{is_valid_ident, to_valid_ident};
 
 mod binding;
@@ -96,6 +99,9 @@ pub struct Context<'a> {
 
     /// If threading is enabled.
     threads_enabled: bool,
+
+    /// If exception handling / unwinding is enabled.
+    unwind_enabled: bool,
 }
 
 /// Definition of a module export
@@ -202,6 +208,7 @@ impl<'a> Context<'a> {
             exports: Default::default(),
             config,
             threads_enabled: threads_xform::is_enabled(module),
+            unwind_enabled: has_local_exception_tags(module),
             module,
             npm_dependencies: Default::default(),
             wit,
@@ -483,6 +490,15 @@ impl<'a> Context<'a> {
             ts.push_str(&init_ts);
         }
 
+        // Generate TypeScript definitions for Node.js with threads enabled
+        if self.config.typescript
+            && matches!(self.config.mode, OutputMode::Node { .. })
+            && self.threads_enabled
+        {
+            let node_atomics_ts = self.ts_for_node_atomics()?;
+            ts.push_str(&node_atomics_ts);
+        }
+
         Ok((self.globals.to_owned(), ts, start))
     }
 
@@ -589,7 +605,15 @@ impl<'a> Context<'a> {
                         if i > 0 {
                             imports.push_str(", ");
                         }
-                        imports.push_str(item);
+                        if is_valid_ident(item) {
+                            imports.push_str(item);
+                        } else {
+                            // Invalid identifiers should already have a valid rename
+                            assert!(rename.is_some());
+                            imports.push('\'');
+                            imports.push_str(&escape_string(item));
+                            imports.push('\'');
+                        }
                         if let Some(other) = rename {
                             imports.push_str(": ");
                             imports.push_str(other)
@@ -707,6 +731,55 @@ impl<'a> Context<'a> {
             */\n\
             {setup_function_declaration} \
                 (module_or_path{arg_optional}: {{ module_or_path: InitInput | Promise<InitInput>{memory_param}{stack_size} }} | InitInput | Promise<InitInput>{memory_param}): Promise<InitOutput>;\n",
+        ))
+    }
+
+    /// Generate TypeScript definitions for Node.js targets with threads/atomics enabled.
+    fn ts_for_node_atomics(&self) -> Result<String, Error> {
+        let output = crate::wasm2es6js::interface(self.module)?;
+
+        Ok(format!(
+            r#"
+export type SyncInitInput = BufferSource | WebAssembly.Module;
+
+export interface InitOutput {{
+{output}}}
+
+export interface InitSyncOptions {{
+    module?: SyncInitInput;
+    memory?: WebAssembly.Memory;
+    thread_stack_size?: number;
+}}
+
+/**
+ * Initialize the WebAssembly module synchronously.
+ *
+ * For the main thread, this is called automatically on import.
+ * Worker threads should call this explicitly with shared module and memory:
+ *
+ * ```js
+ * initSync({{ module: __wbg_wasm_module, memory: __wbg_memory }});
+ * ```
+ *
+ * @param opts - Initialization options
+ * @returns The exports object
+ */
+export function initSync(opts?: InitSyncOptions): InitOutput;
+
+/**
+ * Get the imports object for WebAssembly instantiation.
+ *
+ * @param memory - Optional shared memory to use instead of creating new
+ * @returns The imports object for WebAssembly.Instance
+ */
+export function __wbg_get_imports(memory?: WebAssembly.Memory): WebAssembly.Imports;
+
+/** The compiled WebAssembly module. Can be shared with workers. */
+export const __wbg_wasm_module: WebAssembly.Module;
+
+/** The shared WebAssembly memory. */
+export const __wbg_memory: WebAssembly.Memory;
+"#
         ))
     }
 
@@ -911,8 +984,8 @@ impl<'a> Context<'a> {
             init_stack_size_check = if self.threads_enabled {
                 format!(
                     "if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % {} !== 0)) {{
-                        throw 'invalid stack size';
-                    }}\n",
+                        throw new Error('invalid stack size');
+                    }}\n\n",
                     threads_xform::PAGE_SIZE,
                 )
             } else {
@@ -957,7 +1030,9 @@ impl<'a> Context<'a> {
             let start_call = if needs_manual_start {
                 format!(
                     r#"
-    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % {page_size} !== 0)) {{ throw new Error('invalid stack size'); }}
+    if (typeof thread_stack_size !== "undefined" && (typeof thread_stack_size !== "number" || thread_stack_size === 0 || thread_stack_size % {page_size} !== 0)) {{
+        throw new Error("invalid stack size");
+    }}
     wasm.__wbindgen_start(thread_stack_size);"#,
                     page_size = crate::transforms::threads::PAGE_SIZE,
                 )
@@ -971,13 +1046,13 @@ import {{ isMainThread }} from 'node:worker_threads';
 
 let wasm;
 let wasmModule;
-let __wbg_memory;
+let memory;
 let __initialized = false;
 
 export function initSync(opts = {{}}) {{
     if (__initialized) return wasm;
 
-    let {{ module, memory, thread_stack_size }} = opts;
+    let {{ module, memory: mem, thread_stack_size }} = opts;
 
     if (module === undefined) {{
         const wasmUrl = new URL('{module_name}_bg.wasm', import.meta.url);
@@ -990,10 +1065,10 @@ export function initSync(opts = {{}}) {{
         wasmModule = module;
     }}
 
-    const wasmImports = __wbg_get_imports(memory);
+    const wasmImports = __wbg_get_imports(mem);
     const instance = new WebAssembly.Instance(wasmModule, wasmImports);
     wasm = instance.exports;
-    __wbg_memory = wasmImports['./{module_name}_bg.js'].memory;
+    memory = wasmImports['./{module_name}_bg.js'].memory;
 {start_call}
     __initialized = true;
     return wasm;
@@ -1005,7 +1080,7 @@ if (isMainThread) {{
     initSync();
 }}
 
-export {{ wasm as __wasm, wasmModule as __wbindgen_wasm_module, __wbg_memory as memory }};
+export {{ wasm as __wasm, wasmModule as __wbg_wasm_module, memory as __wbg_memory, __wbg_get_imports }};
 "#
             )
         } else {
@@ -1035,7 +1110,9 @@ export {{ wasm as __wasm, wasmModule as __wbindgen_wasm_module, __wbg_memory as 
             let start_call = if needs_manual_start {
                 format!(
                     r#"
-    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % {page_size} !== 0)) {{ throw new Error('invalid stack size'); }}
+    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % {page_size} !== 0)) {{
+        throw new Error('invalid stack size');
+    }}
     wasm.__wbindgen_start(thread_stack_size);"#,
                     page_size = crate::transforms::threads::PAGE_SIZE,
                 )
@@ -1046,6 +1123,7 @@ export {{ wasm as __wasm, wasmModule as __wbindgen_wasm_module, __wbg_memory as 
             format!(
                 r#"let wasm;
 let wasmModule;
+let memory;
 let __initialized = false;
 
 // Export __wbg_get_imports for workers to use
@@ -1056,7 +1134,7 @@ exports.initSync = function(opts) {{
     if (__initialized) return wasm;
 
     let module = opts.module;
-    let memory = opts.memory;
+    let mem = opts.memory;
     let thread_stack_size = opts.thread_stack_size;
 
     if (module === undefined) {{
@@ -1070,12 +1148,13 @@ exports.initSync = function(opts) {{
         wasmModule = module;
     }}
 
-    const wasmImports = __wbg_get_imports(memory);
+    const wasmImports = __wbg_get_imports(mem);
     const instance = new WebAssembly.Instance(wasmModule, wasmImports);
     wasm = instance.exports;
+    memory = wasmImports['./{module_name}_bg.js'].memory;
     exports.__wasm = wasm;
-    exports.__wbindgen_wasm_module = wasmModule;
-    exports.memory = wasmImports['./{module_name}_bg.js'].memory;
+    exports.__wbg_wasm_module = wasmModule;
+    exports.__wbg_memory = memory;
 {start_call}
     __initialized = true;
     return wasm;
@@ -2466,6 +2545,14 @@ if (require('worker_threads').isMainThread) {{
     }
 
     fn expose_handle_error(&mut self) -> Result<(), Error> {
+        if self
+            .intrinsics
+            .as_ref()
+            .unwrap()
+            .contains_key("handle_error")
+        {
+            return Ok(());
+        }
         let store = self
             .aux
             .exn_store
@@ -2642,6 +2729,11 @@ if (require('worker_threads').isMainThread) {{
         // destroyed, then we put back the pointer so a future
         // invocation can succeed.
         intrinsic(&mut self.intrinsics, "make_mut_closure".into(), || {
+            let safe_destructor = "\
+                state.dtor(state.a, state.b);
+                state.a = 0;
+                CLOSURE_DTORS.unregister(state);\
+                ";
             let (state_init, instance_check) = if self.config.generate_reset_state {
                 (
                     "const state = { a: arg0, b: arg1, cnt: 1, dtor, instance: __wbg_instance_id };",
@@ -2649,7 +2741,7 @@ if (require('worker_threads').isMainThread) {{
                     if (state.instance !== __wbg_instance_id) {
                         throw new Error('Cannot invoke closure from previous WASM instance');
                     }
-                    ",
+                    "
                 )
             } else {
                 ("const state = { a: arg0, b: arg1, cnt: 1, dtor };", "")
@@ -2675,9 +2767,7 @@ if (require('worker_threads').isMainThread) {{
                     }};
                     real._wbg_cb_unref = () => {{
                         if (--state.cnt === 0) {{
-                            state.dtor(state.a, state.b);
-                            state.a = 0;
-                            CLOSURE_DTORS.unregister(state);
+                            {safe_destructor}
                         }}
                     }};
                     CLOSURE_DTORS.register(real, state, state);
@@ -2691,12 +2781,18 @@ if (require('worker_threads').isMainThread) {{
 
     fn expose_make_closure(&mut self) {
         self.expose_closure_finalization();
+
         // For shared closures they can be invoked recursively so we
         // just immediately pass through `this.a`. If we end up
         // executing the destructor, however, we clear out the
         // `this.a` pointer to prevent it being used again the
         // future.
         intrinsic(&mut self.intrinsics, "make_closure".into(), || {
+            let safe_destructor = "\
+                state.dtor(state.a, state.b);
+                state.a = 0;
+                CLOSURE_DTORS.unregister(state);\
+                ";
             let (state_init, instance_check) = if self.config.generate_reset_state {
                 (
                     "const state = { a: arg0, b: arg1, cnt: 1, dtor, instance: __wbg_instance_id };",
@@ -2704,7 +2800,7 @@ if (require('worker_threads').isMainThread) {{
                     if (state.instance !== __wbg_instance_id) {
                         throw new Error('Cannot invoke closure from previous WASM instance');
                     }
-                    ",
+                    "
                 )
             } else {
                 ("const state = { a: arg0, b: arg1, cnt: 1, dtor };", "")
@@ -2727,9 +2823,7 @@ if (require('worker_threads').isMainThread) {{
                     }};
                     real._wbg_cb_unref = () => {{
                         if (--state.cnt === 0) {{
-                            state.dtor(state.a, state.b);
-                            state.a = 0;
-                            CLOSURE_DTORS.unregister(state);
+                            {safe_destructor}
                         }}
                     }};
                     CLOSURE_DTORS.register(real, state, state);
@@ -2750,12 +2844,12 @@ if (require('worker_threads').isMainThread) {{
                     : new FinalizationRegistry({});
                 ",
                 if self.config.generate_reset_state {
-                    "
-                    state => {{
-                        if (state.instance === __wbg_instance_id) {{
+                    "\
+                    state => {
+                        if (state.instance === __wbg_instance_id) {
                             state.dtor(state.a, state.b);
-                        }}
-                    }}
+                        }
+                    }
                     "
                 } else {
                     "state => state.dtor(state.a, state.b)"
@@ -2769,7 +2863,6 @@ if (require('worker_threads').isMainThread) {{
         self.global("let __wbg_instance_id = 0;");
 
         let mut reset_statements = Vec::new();
-
         reset_statements.push("__wbg_instance_id++;".to_string());
 
         for (num, kinds) in self.memories.values() {
@@ -2849,7 +2942,7 @@ if (require('worker_threads').isMainThread) {{
                 definition,
                 ts_definition: "function __wbg_reset_state(): void;\n".to_string(),
                 ts_comments: None,
-                private: false,
+                private: !self.config.generate_reset_state,
             }),
         )?;
 
@@ -2866,6 +2959,12 @@ if (require('worker_threads').isMainThread) {{
         }
         self.globals.push_str(s);
         self.globals.push('\n');
+    }
+
+    /// Gets the JS identifier for a class, which may be aliased if the original
+    /// name conflicts with a JS builtin (e.g., `Array` -> `Array2`).
+    pub fn require_class_identifier(&mut self, name: &str) -> String {
+        self.require_class(name).identifier.clone()
     }
 
     fn require_class_wrap(&mut self, name: &str) -> String {
@@ -3057,6 +3156,9 @@ if (require('worker_threads').isMainThread) {{
 
     pub fn generate(&mut self) -> Result<(), Error> {
         self.prestore_global_import_identifiers()?;
+
+        self.generate_jstag_import();
+
         for (id, adapter, kind) in iter_adapter(self.aux, self.wit, self.module) {
             let instrs = match &adapter.kind {
                 AdapterKind::Import { .. } => continue,
@@ -3114,6 +3216,32 @@ if (require('worker_threads').isMainThread) {{
         };
 
         self.export_name_of(thread_destroy);
+    }
+
+    /// Generate the import for `WebAssembly.JSTag` if it was used.
+    fn generate_jstag_import(&mut self) {
+        let Some(js_tag) = self.aux.js_tag else {
+            return;
+        };
+
+        // Find the import ID for the JSTag
+        let import_id = self.module.imports.iter().find_map(|import| {
+            let walrus::ImportKind::Tag(tag_id) = import.kind else {
+                return None;
+            };
+            if tag_id == js_tag {
+                Some(import.id())
+            } else {
+                None
+            }
+        });
+
+        let Some(id) = import_id else {
+            return;
+        };
+
+        self.wasm_import_definitions
+            .insert(id, "WebAssembly.JSTag".to_string());
     }
 
     /// Registers import names for all `Global` imports first before we actually
@@ -3363,7 +3491,12 @@ if (require('worker_threads').isMainThread) {{
                 }
             }
             ContextAdapterKind::Import(core) => {
-                let code = if catch {
+                // When js_tag is set, all catch imports use wasm catch wrappers
+                // instead of the JS handleError wrapper
+                let has_wasm_catch = self.aux.js_tag.is_some();
+
+                let code = if catch && !has_wasm_catch {
+                    self.expose_handle_error()?;
                     format!("function() {{ return handleError(function {code}, arguments); }}")
                 } else if log_error {
                     format!("function() {{ return logError(function {code}, arguments); }}")
@@ -3739,7 +3872,12 @@ if (require('worker_threads').isMainThread) {{
             AuxImport::StructuralGetter(field) => {
                 assert!(kind == AdapterJsImportKind::Normal);
                 assert!(!variadic);
-                assert_eq!(args.len(), 1);
+                assert_eq!(
+                    args.len(),
+                    1,
+                    "The getter '{field}' as more than one args ({n})",
+                    n = args.len()
+                );
                 Ok(format!("{}{}", args[0], property_accessor(field)))
             }
 

@@ -111,7 +111,7 @@ impl ClassesStrings2 {
 
 #[wasm_bindgen_test]
 fn exceptions() {
-    js_exceptions(cfg!(target_feature = "exception-handling"));
+    js_exceptions(cfg!(target_feature = "exception-handling",));
 }
 
 #[wasm_bindgen]

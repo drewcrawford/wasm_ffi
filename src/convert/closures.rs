@@ -4,7 +4,8 @@ use core::mem;
 #[cfg(all(feature = "std", target_arch = "wasm32", panic = "unwind"))]
 use crate::__rt::maybe_catch_unwind;
 use crate::closure::{
-    Closure, IntoWasmClosure, WasmClosure, WasmClosureFnOnce, WasmClosureFnOnceAbort,
+    Closure, IntoWasmClosure, UnsizeClosureRef, UnsizeClosureRefMut, WasmClosure,
+    WasmClosureFnOnce, WasmClosureFnOnceAbort,
 };
 use crate::convert::slices::WasmSlice;
 use crate::convert::RefFromWasmAbi;
@@ -112,6 +113,7 @@ macro_rules! closures {
             if a == 0 {
                 throw_str("closure invoked recursively or after being dropped");
             }
+            let b = b & 0x7FFFFFFF;
             let ret = {
                 let f: & $($mut)? dyn $Fn $FnArgs -> R = mem::transmute((a, b));
                 $(
@@ -151,11 +153,34 @@ macro_rules! closures {
         {
             fn unsize(self: Box<Self>) -> Box<dyn $Fn $FnArgs -> R> { self }
         }
+
     };);
+
+    // UnsizeClosureRef is only implemented for Fn, not FnMut.
+    // UnsizeClosureRefMut is implemented for FnMut.
+    // Since Fn: FnMut, any Fn closure can be used as FnMut, so this covers all cases.
+    (@impl_unsize_closure_ref $FnArgs:tt $FromWasmAbi:ident $($var_expr:expr => $var:ident $arg1:ident $arg2:ident $arg3:ident $arg4:ident)*) => (
+        impl<'a, T: 'a, $($var: 'a + $FromWasmAbi,)* R: 'a + ReturnWasmAbi> UnsizeClosureRef<dyn Fn $FnArgs -> R + 'a> for T
+        where
+            T: Fn $FnArgs -> R,
+        {
+            type Static = dyn Fn $FnArgs -> R;
+            fn unsize_closure_ref(&self) -> &(dyn Fn $FnArgs -> R + 'a) { self }
+        }
+
+        impl<'a, T: 'a, $($var: 'a + $FromWasmAbi,)* R: 'a + ReturnWasmAbi> UnsizeClosureRefMut<dyn FnMut $FnArgs -> R + 'a> for T
+        where
+            T: FnMut $FnArgs -> R,
+        {
+            type Static = dyn FnMut $FnArgs -> R;
+            fn unsize_closure_ref(&mut self) -> &mut (dyn FnMut $FnArgs -> R + 'a) { self }
+        }
+    );
 
     (@impl_for_args $FnArgs:tt $FromWasmAbi:ident [$($maybe_unwind_safe:tt)*] $($var_expr:expr => $var:ident $arg1:ident $arg2:ident $arg3:ident $arg4:ident)*) => {
         closures!(@impl_for_fn false [] Fn $FnArgs $FromWasmAbi $($var_expr => $var $arg1 $arg2 $arg3 $arg4)*);
         closures!(@impl_for_fn true [mut] FnMut $FnArgs $FromWasmAbi $($var_expr => $var $arg1 $arg2 $arg3 $arg4)*);
+        closures!(@impl_unsize_closure_ref $FnArgs $FromWasmAbi $($var_expr => $var $arg1 $arg2 $arg3 $arg4)*);
 
         // The memory safety here in these implementations below is a bit tricky. We
         // want to be able to drop the `Closure` object from within the invocation of a

@@ -123,11 +123,17 @@ pub(crate) struct MixinData<'src> {
     pub(crate) stability: ApiStability,
 }
 
+pub(crate) struct AttributeNamespaceData<'src> {
+    pub(crate) definition: &'src weedle::namespace::AttributeNamespaceMember<'src>,
+    pub(crate) stability: ApiStability,
+}
+
 /// We need to collect namespace data during the first pass, to be used later.
 #[derive(Default)]
 pub(crate) struct NamespaceData<'src> {
     pub(crate) operations: BTreeMap<OperationId<'src>, OperationData<'src>>,
     pub(crate) consts: Vec<ConstNamespaceData<'src>>,
+    pub(crate) attributes: Vec<AttributeNamespaceData<'src>>,
     pub(crate) stability: ApiStability,
 }
 
@@ -181,6 +187,7 @@ pub(crate) struct Signature<'src> {
     pub(crate) args: Vec<Arg<'src>>,
     pub(crate) ret: weedle::types::ReturnType<'src>,
     pub(crate) attrs: &'src Option<ExtendedAttributeList<'src>>,
+    pub(crate) stability: ApiStability,
 }
 
 #[derive(Clone, Debug)]
@@ -402,11 +409,15 @@ fn first_pass_operation<'src, A: Into<Arg<'src>> + 'src>(
     for id in ids {
         let op = operations.entry(*id).or_default();
         op.is_static = is_static;
+        // Note: We still set operation-level stability for backwards compatibility,
+        // but per-signature stability takes precedence when determining if a
+        // generated method should be marked unstable.
         op.stability = stability;
         op.signatures.push(Signature {
             args: args.clone(),
             ret: ret.clone(),
             attrs,
+            stability,
         });
     }
 }
@@ -1474,8 +1485,33 @@ impl<'src> FirstPass<'src, (&'src str, ApiStability)> for weedle::namespace::Nam
                 Ok(())
             }
             weedle::namespace::NamespaceMember::Operation(op) => op.first_pass(record, ctx),
-            _ => Ok(()),
+            weedle::namespace::NamespaceMember::Attribute(attr) => attr.first_pass(record, ctx),
         }
+    }
+}
+
+impl<'src> FirstPass<'src, (&'src str, ApiStability)>
+    for weedle::namespace::AttributeNamespaceMember<'src>
+{
+    fn first_pass(
+        &'src self,
+        record: &mut FirstPassRecord<'src>,
+        ctx: (&'src str, ApiStability),
+    ) -> Result<()> {
+        if util::is_chrome_only(&self.attributes) {
+            return Ok(());
+        }
+
+        record
+            .namespaces
+            .get_mut(ctx.0)
+            .unwrap()
+            .attributes
+            .push(AttributeNamespaceData {
+                definition: self,
+                stability: ctx.1,
+            });
+        Ok(())
     }
 }
 

@@ -280,6 +280,10 @@ global.math_test = {
   add_one(val) {
     return val + 1;
   },
+
+  get PI() {
+    return Math.PI;
+  },
 };
 
 global.GetNoInterfaceObject = class {
@@ -512,5 +516,15 @@ global.GetUnstableInterface = class {
 global.TestPromises = class {
   stringPromise() {
     return new Promise(r => r("abc"));
+  }
+};
+
+global.SignatureStability = class {
+  process(options) {
+    if (options === undefined) {
+      return "stable";
+    } else {
+      return options.mode || "safe";
+    }
   }
 };

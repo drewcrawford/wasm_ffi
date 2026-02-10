@@ -11,7 +11,7 @@ Now doctests are detected and executed properly. Supports:
 - Shared worker (`wasm_bindgen_test_configure!(run_in_shared_worker)`)
 - Service worker (`wasm_bindgen_test_configure!(run_in_service_worker)`)
 
-# nodejs-threads
+# nodejs-threads (UPSTREAMED)
 
 Add Node.js `worker_threads` support for atomics builds. Supports both CommonJS (`--target nodejs`) and ESM (`--target experimental-nodejs-module`) targets. When targeting Node.js with atomics enabled, wasm-bindgen now generates:
 

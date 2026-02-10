@@ -110,7 +110,7 @@ macro_rules! externs {
 /// use wasm_bindgen::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::closure::Closure;
+    pub use crate::closure::{Closure, ScopedClosure, StaticClosure};
     pub use crate::JsCast;
     pub use crate::JsValue;
     pub use crate::UnwrapThrowExt;
@@ -154,6 +154,11 @@ pub struct JsValue {
     idx: u32,
     _marker: PhantomData<*mut u8>, // not at all threadsafe
 }
+
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl Send for JsValue {}
+#[cfg(not(target_feature = "atomics"))]
+unsafe impl Sync for JsValue {}
 
 impl JsValue {
     /// The `null` JS value constant.

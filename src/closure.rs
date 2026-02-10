@@ -1,11 +1,39 @@
-//! Support for long-lived closures in `wasm-bindgen`
+//! Support for closures in `wasm-bindgen`
 //!
-//! This module defines the `Closure` type which is used to pass "owned
-//! closures" from Rust to JS. Some more details can be found on the `Closure`
-//! type itself.
+//! This module defines the [`ScopedClosure`] type which is used to pass Rust closures
+//! to JavaScript. All closures are unwind safe: panics are caught and converted to
+//! JavaScript exceptions when built with `panic=unwind`.
+//!
+//! # Choosing a `Closure` API
+//!
+//! | Use Case | API | Lifetime |
+//! |----------|-----|----------|
+//! | Immediate/synchronous callbacks | [`ScopedClosure::borrow`] / [`ScopedClosure::borrow_mut`] | Non-`'static` allowed |
+//! | Long-lived callbacks (events, timers) | [`Closure::new`] / [`ScopedClosure::own`] | `'static` required |
+//! | One-shot callbacks | [`Closure::once`] / [`Closure::once_into_js`] | `'static` required |
+//! | Transfer ownership to JS | Pass `Closure` by value | `'static` required |
+//!
+//! # Type Aliases
+//!
+//! - [`ScopedClosure<'a, T>`] — The unified closure type with a lifetime parameter
+//! - [`StaticClosure<T>`] — Alias for `ScopedClosure<'static, T>`
+//! - [`Closure<T>`] — Alias for `StaticClosure<T>` (for backwards compatibility)
+//!
+//! # Ownership Model
+//!
+//! `ScopedClosure` follows the same ownership model as other wasm-bindgen types:
+//! the JavaScript reference remains valid until the Rust value is dropped. When
+//! dropped, the closure is invalidated and any subsequent calls from JavaScript
+//! will throw an exception.
+//!
+//! For borrowed closures created with `borrow`/`borrow_mut`, Rust's borrow checker
+//! ensures the `ScopedClosure` cannot outlive the closure's captured data.
+//!
+//! See the [`ScopedClosure`] type documentation for detailed examples.
 
 #![allow(clippy::fn_to_numeric_cast)]
 
+use crate::cast::JsCast;
 use crate::convert::*;
 use crate::describe::*;
 use crate::JsValue;
@@ -247,22 +275,309 @@ extern "C" {
 ///     // here or return some sort of handle to JS!
 /// }
 /// ```
-pub struct Closure<T: ?Sized> {
-    js: JsClosure,
-    // careful: must be Box<T> not just T because unsized PhantomData
-    // seems to have weird interaction with Pin<>
-    _marker: PhantomData<Box<T>>,
+/// A closure with a lifetime parameter that represents a Rust closure passed to JavaScript.
+///
+/// `ScopedClosure<'a, T>` is the unified closure type. The lifetime `'a` indicates
+/// how long the closure is valid:
+///
+/// - **`ScopedClosure<'static, T>`** (aka [`StaticClosure<T>`] or [`Closure<T>`]) - An owned
+///   closure with heap-allocated data. Requires `'static` captures. Use for long-lived
+///   closures like event listeners and timers. Created with [`Closure::new`] or [`ScopedClosure::own`].
+///
+/// - **`ScopedClosure<'a, T>`** (non-`'static`) - A borrowed closure referencing stack data.
+///   Allows non-`'static` captures. Use for immediate/synchronous callbacks. Created with
+///   [`ScopedClosure::borrow`] or [`ScopedClosure::borrow_mut`].
+///
+/// # Ownership Model
+///
+/// `ScopedClosure` follows the same ownership model as other wasm-bindgen types:
+/// the JavaScript reference remains valid until the Rust value is dropped. When
+/// dropped, the closure is invalidated and any subsequent calls from JavaScript
+/// will throw: "closure invoked recursively or after being dropped".
+///
+/// For `'static` closures, you can also:
+/// - Pass by value to transfer ownership to JS (implements [`IntoWasmAbi`])
+/// - Call [`forget()`](Self::forget) to leak the closure (JS can use it indefinitely)
+/// - Call [`into_js_value()`](Self::into_js_value) to transfer to JS GC management
+///
+/// # Lifetime Safety
+///
+/// For borrowed closures, Rust's borrow checker ensures that `ScopedClosure` cannot
+/// be held longer than the closure's captured data:
+///
+/// ```ignore
+/// let mut sum = 0;
+/// let mut f = |x: u32| { sum += x; };  // f borrows sum
+/// let closure = ScopedClosure::borrow_mut(&mut f);  // closure borrows f
+/// // closure cannot outlive f, and f cannot outlive sum
+/// ```
+///
+/// # Examples
+///
+/// ## Borrowed closures with `ScopedClosure::borrow_mut`
+///
+/// Use for immediate/synchronous callbacks where JS calls the closure right away:
+///
+/// ```ignore
+/// use wasm_bindgen::prelude::*;
+///
+/// #[wasm_bindgen]
+/// extern "C" {
+///     fn call_immediately(cb: &ScopedClosure<dyn FnMut(u32)>);
+/// }
+///
+/// let mut sum = 0;
+/// {
+///     let mut f = |x: u32| { sum += x; };
+///     let closure = ScopedClosure::borrow_mut(&mut f);
+///     call_immediately(&closure);
+/// }  // closure dropped here, JS function invalidated
+/// assert_eq!(sum, 42);
+/// ```
+///
+/// ## Owned closures with `Closure::new`
+///
+/// Use for long-lived callbacks like event listeners and timers:
+///
+/// ```ignore
+/// use wasm_bindgen::prelude::*;
+///
+/// #[wasm_bindgen]
+/// extern "C" {
+///     fn setInterval(closure: &Closure<dyn FnMut()>, time: u32) -> i32;
+/// }
+///
+/// // Closure::new requires 'static, so use `move` to capture by value
+/// let cb = Closure::new(move || {
+///     // ...
+/// });
+/// setInterval(&cb, 1000);
+/// // Must keep `cb` alive or call `cb.forget()` to transfer to JS
+/// ```
+///
+/// ## Transferring ownership to JS
+///
+/// Pass a `Closure` by value to transfer ownership:
+///
+/// ```ignore
+/// use wasm_bindgen::prelude::*;
+///
+/// #[wasm_bindgen]
+/// extern "C" {
+///     fn set_one_shot_callback(cb: Closure<dyn FnMut()>);
+/// }
+///
+/// let cb = Closure::new(|| { /* ... */ });
+/// set_one_shot_callback(cb);  // Ownership transferred, no need to store
+/// ```
+pub struct ScopedClosure<'a, T: ?Sized> {
+    js: JsValue,
+    _marker: PhantomData<T>,
+    _lifetime: PhantomData<&'a ()>,
 }
 
-fn _assert_compiles<T>(mut pin: core::pin::Pin<&mut Closure<T>>) {
-    let _ = &mut *pin;
+/// A `'static` closure that owns its data on the heap.
+///
+/// This is an alias for `ScopedClosure<'static, T>`. Use this for long-lived
+/// closures like event listeners and timers.
+///
+/// See [`ScopedClosure`] for full documentation.
+pub type StaticClosure<T> = ScopedClosure<'static, T>;
+
+/// Alias for [`StaticClosure`] for backwards compatibility.
+///
+/// In a future major version, `Closure` may become `ScopedClosure` with a
+/// lifetime parameter.
+pub type Closure<T> = StaticClosure<T>;
+
+// ScopedClosure is Unpin because it only contains a JsValue (which is just a u32)
+// and PhantomData markers. The closure data is either on the heap (owned) or
+// referenced through a raw pointer (borrowed), neither of which is stored inline.
+impl<T: ?Sized> Unpin for ScopedClosure<'_, T> {}
+
+fn _assert_compiles<T>(pin: core::pin::Pin<&mut ScopedClosure<'static, T>>) {
+    let _ = &mut *pin.get_mut();
 }
 
-impl<T> Closure<T>
+impl<T: ?Sized> Drop for ScopedClosure<'_, T> {
+    fn drop(&mut self) {
+        // Invalidate the closure on the JS side.
+        //
+        // The JS bindings distinguish owned vs borrowed closures via the `dtor_idx`
+        // encoded in `WasmDescribe`: owned closures pass a non-zero destructor
+        // function pointer, borrowed closures pass `0`.
+        //
+        // For owned closures (`Closure::new`/`ScopedClosure::own`), this decreases
+        // the refcount and frees the Rust heap data when the count reaches zero.
+        //
+        // For borrowed closures (`ScopedClosure::borrow`/`borrow_mut`), this sets
+        // state.a = state.b = 0 to prevent any further calls to the closure.
+        self.js.unchecked_ref::<JsClosure>()._wbg_cb_unref();
+    }
+}
+
+impl<'a, T> ScopedClosure<'a, T>
 where
     T: ?Sized + WasmClosure,
 {
-    /// Creates a new instance of `Closure` from the provided Rust function.
+    /// Creates a scoped closure by borrowing an immutable `Fn` closure.
+    ///
+    /// This is the recommended way to pass closures to JavaScript for immediate/
+    /// synchronous use. Unlike [`Closure::new`], this does not require the closure
+    /// to be `'static`, allowing you to capture references to local variables.
+    ///
+    /// The returned `ScopedClosure<'a, _>` has lifetime `'a` from the closure
+    /// reference, which means it cannot outlive the closure or any data the
+    /// closure captures.
+    ///
+    /// For closures that need mutable state (`FnMut`), use [`borrow_mut`](Self::borrow_mut).
+    ///
+    /// # When to use scoped closures
+    ///
+    /// Use `ScopedClosure::borrow` or `ScopedClosure::borrow_mut` when:
+    /// - JavaScript will call the closure immediately and not retain it
+    /// - You need to capture non-`'static` references
+    /// - You want automatic cleanup when the `ScopedClosure` is dropped
+    ///
+    /// # Closure lifetime
+    ///
+    /// The JavaScript function is only valid while the `ScopedClosure` exists.
+    /// Once dropped, the JavaScript function is invalidated. If JavaScript retains
+    /// a reference and calls it later, it will throw: "closure invoked recursively
+    /// or after being dropped".
+    ///
+    /// Rust's borrow checker ensures `ScopedClosure` cannot outlive the closure's
+    /// captured data, preventing use-after-free bugs.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use wasm_bindgen::prelude::*;
+    ///
+    /// #[wasm_bindgen]
+    /// extern "C" {
+    ///     fn call_with_value(cb: &ScopedClosure<dyn Fn(u32)>, value: u32);
+    /// }
+    ///
+    /// let data = vec![1, 2, 3];
+    /// let f = || {
+    ///     // Can access `data` without moving it
+    ///     println!("data len: {}", data.len());
+    /// };
+    /// let closure = ScopedClosure::borrow(&f);
+    /// call_with_value(&closure, 42);
+    /// ```
+    pub fn borrow<F>(t: &'a F) -> ScopedClosure<'a, F::Static>
+    where
+        F: UnsizeClosureRef<T> + ?Sized,
+    {
+        let t: &T = t.unsize_closure_ref();
+        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(&t) };
+        ScopedClosure {
+            js: crate::__rt::wbg_cast(BorrowedClosure::<T> {
+                data: WasmSlice { ptr, len },
+                unwind_safe: true,
+                _marker: PhantomData,
+            }),
+            _marker: PhantomData,
+            _lifetime: PhantomData,
+        }
+    }
+
+    /// Creates a scoped closure by mutably borrowing a `FnMut` closure.
+    ///
+    /// This is the most common variant for scoped closures since most closures
+    /// that mutate captured state need `FnMut`.
+    ///
+    /// See [`borrow`](Self::borrow) for full documentation on scoped closures.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use wasm_bindgen::prelude::*;
+    ///
+    /// #[wasm_bindgen]
+    /// extern "C" {
+    ///     fn call_three_times(cb: &ScopedClosure<dyn FnMut(u32)>);
+    /// }
+    ///
+    /// let mut sum = 0;
+    /// let closure = ScopedClosure::borrow_mut(&mut |x: u32| {
+    ///     sum += x;
+    /// });
+    /// call_three_times(&closure);
+    /// // closure dropped, `sum` is accessible again
+    /// assert_eq!(sum, 6); // 1 + 2 + 3
+    /// ```
+    pub fn borrow_mut<F>(t: &'a mut F) -> ScopedClosure<'a, F::Static>
+    where
+        F: UnsizeClosureRefMut<T> + ?Sized,
+    {
+        let t: &mut T = t.unsize_closure_ref();
+        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(&t) };
+        ScopedClosure {
+            js: crate::__rt::wbg_cast(BorrowedClosure::<T> {
+                data: WasmSlice { ptr, len },
+                unwind_safe: true,
+                _marker: PhantomData,
+            }),
+            _marker: PhantomData,
+            _lifetime: PhantomData,
+        }
+    }
+
+    /// Like [`borrow`](Self::borrow), but does not catch panics.
+    ///
+    /// If the closure panics, the process will abort. This variant does not
+    /// require `UnwindSafe`.
+    pub fn borrow_aborting<F>(t: &'a F) -> ScopedClosure<'a, F::Static>
+    where
+        F: UnsizeClosureRef<T> + ?Sized,
+    {
+        let t: &T = t.unsize_closure_ref();
+        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(&t) };
+        ScopedClosure {
+            js: crate::__rt::wbg_cast(BorrowedClosure::<T> {
+                data: WasmSlice { ptr, len },
+                unwind_safe: false,
+                _marker: PhantomData,
+            }),
+            _marker: PhantomData,
+            _lifetime: PhantomData,
+        }
+    }
+
+    /// Like [`borrow_mut`](Self::borrow_mut), but does not catch panics.
+    ///
+    /// If the closure panics, the process will abort. This variant does not
+    /// require `UnwindSafe`.
+    pub fn borrow_mut_aborting<F>(t: &'a mut F) -> ScopedClosure<'a, F::Static>
+    where
+        F: UnsizeClosureRefMut<T> + ?Sized,
+    {
+        let t: &mut T = t.unsize_closure_ref();
+        let (ptr, len): (u32, u32) = unsafe { mem::transmute_copy(&t) };
+        ScopedClosure {
+            js: crate::__rt::wbg_cast(BorrowedClosure::<T> {
+                data: WasmSlice { ptr, len },
+                unwind_safe: false,
+                _marker: PhantomData,
+            }),
+            _marker: PhantomData,
+            _lifetime: PhantomData,
+        }
+    }
+}
+
+/// Methods for creating and managing `'static` closures.
+///
+/// These methods are only available on `StaticClosure<T>` (aka `Closure<T>`),
+/// not on borrowed `ScopedClosure<'a, T>` where `'a` is not `'static`.
+impl<T> ScopedClosure<'static, T>
+where
+    T: ?Sized + WasmClosure,
+{
+    /// Creates a new owned `Closure` from the provided Rust function.
     ///
     /// Note that the closure provided here, `F`, has a few requirements
     /// associated with it:
@@ -278,11 +593,24 @@ where
     /// * Its arguments and return values are all types that can be shared with
     ///   JS (i.e. have `#[wasm_bindgen]` annotations or are simple numbers,
     ///   etc.)
-    pub fn new<F>(t: F) -> Closure<T>
+    pub fn new<F>(t: F) -> Self
     where
-        F: MaybeUnwindSafe + IntoWasmClosure<T> + 'static,
+        F: IntoWasmClosure<T> + 'static,
     {
         Self::_wrap(Box::new(t).unsize(), true)
+    }
+
+    /// Alias for [`new`](Self::new) — creates an owned `'static` closure.
+    ///
+    /// This name is symmetric with [`borrow`](ScopedClosure::borrow) and
+    /// [`borrow_mut`](ScopedClosure::borrow_mut) for borrowed closures.
+    ///
+    /// See [`new`](Self::new) for full documentation.
+    pub fn own<F>(t: F) -> Self
+    where
+        F: IntoWasmClosure<T> + 'static,
+    {
+        Self::new(t)
     }
 
     /// Creates a new instance of `Closure` from the provided Rust function.
@@ -309,18 +637,32 @@ where
     /// * Its arguments and return values are all types that can be shared with
     ///   JS (i.e. have `#[wasm_bindgen]` annotations or are simple numbers,
     ///   etc.)
-    pub fn new_aborting<F>(t: F) -> Closure<T>
+    pub fn new_aborting<F>(t: F) -> Self
     where
         F: IntoWasmClosure<T> + 'static,
     {
         Self::_wrap(Box::new(t).unsize(), false)
     }
 
+    /// Alias for [`new_aborting`](Self::new_aborting) — creates an owned `'static` closure
+    /// that aborts on panic.
+    ///
+    /// This name is symmetric with [`borrow_aborting`](ScopedClosure::borrow_aborting) and
+    /// [`borrow_mut_aborting`](ScopedClosure::borrow_mut_aborting) for borrowed closures.
+    ///
+    /// See [`new_aborting`](Self::new_aborting) for full documentation.
+    pub fn own_aborting<F>(t: F) -> Self
+    where
+        F: IntoWasmClosure<T> + 'static,
+    {
+        Self::new_aborting(t)
+    }
+
     /// A more direct version of `Closure::new` which creates a `Closure` from
     /// a `Box<dyn Fn>`/`Box<dyn FnMut>`, which is how it's kept internally.
     ///
     /// This version catches panics when unwinding is available.
-    pub fn wrap<F>(data: Box<F>) -> Closure<T>
+    pub fn wrap<F>(data: Box<F>) -> Self
     where
         F: MaybeUnwindSafe + IntoWasmClosure<T> + ?Sized,
     {
@@ -337,7 +679,7 @@ where
     /// - Your closure captures types that aren't `UnwindSafe` (like `Rc<Cell<T>>`)
     /// - You don't need panic catching across the JS boundary
     /// - You prefer abort-on-panic behavior
-    pub fn wrap_aborting<F>(data: Box<F>) -> Closure<T>
+    pub fn wrap_aborting<F>(data: Box<F>) -> Self
     where
         F: IntoWasmClosure<T> + ?Sized,
     {
@@ -345,21 +687,20 @@ where
     }
 
     #[cfg(all(feature = "std", target_arch = "wasm32", panic = "unwind"))]
-    fn _wrap(data: Box<T>, unwind_safe: bool) -> Closure<T> {
+    fn _wrap(data: Box<T>, unwind_safe: bool) -> Self {
         Self {
-            js: crate::__rt::wbg_cast(OwnedClosureUnwind {
-                closure: OwnedClosure(data),
-                unwind_safe,
-            }),
+            js: crate::__rt::wbg_cast(OwnedClosureUnwind { data, unwind_safe }),
             _marker: PhantomData,
+            _lifetime: PhantomData,
         }
     }
 
     #[cfg(not(all(feature = "std", target_arch = "wasm32", panic = "unwind")))]
-    fn _wrap(data: Box<T>, _unwind_safe: bool) -> Closure<T> {
+    fn _wrap(data: Box<T>, _unwind_safe: bool) -> Self {
         Self {
             js: crate::__rt::wbg_cast(OwnedClosure(data)),
             _marker: PhantomData,
+            _lifetime: PhantomData,
         }
     }
 
@@ -377,6 +718,12 @@ where
     /// supported, this can be dangerous if this function is called many times
     /// in an application because the memory leak will overwhelm the page
     /// quickly and crash the wasm.
+    ///
+    /// # Safety Note
+    ///
+    /// This method is only available on `'static` closures (`Closure<T>` /
+    /// `StaticClosure<T>`). Calling it on a borrowed `ScopedClosure` would be
+    /// unsound because the closure data would become invalid when the borrow ends.
     pub fn into_js_value(self) -> JsValue {
         let idx = self.js.idx;
         mem::forget(self);
@@ -386,6 +733,12 @@ where
     /// Same as `mem::forget(self)`.
     ///
     /// This can be used to fully relinquish closure ownership to the JS.
+    ///
+    /// # Safety Note
+    ///
+    /// This method is only available on `'static` closures (`Closure<T>` /
+    /// `StaticClosure<T>`). Calling it on a borrowed `ScopedClosure` would be
+    /// unsound because the closure data would become invalid when the borrow ends.
     pub fn forget(self) {
         mem::forget(self);
     }
@@ -524,7 +877,7 @@ pub trait WasmClosureFnOnceAbort<FnMut: ?Sized, A, R>: 'static {
     fn into_js_function(self) -> JsValue;
 }
 
-impl<T: ?Sized> AsRef<JsValue> for Closure<T> {
+impl<T: ?Sized> AsRef<JsValue> for ScopedClosure<'_, T> {
     fn as_ref(&self) -> &JsValue {
         &self.js
     }
@@ -539,8 +892,14 @@ struct OwnedClosure<T: ?Sized>(Box<T>);
 /// when panic=unwind to pass both the closure and the unwind_safe flag to JS.
 #[cfg(all(feature = "std", target_arch = "wasm32", panic = "unwind"))]
 struct OwnedClosureUnwind<T: ?Sized> {
-    closure: OwnedClosure<T>,
+    data: Box<T>,
     unwind_safe: bool,
+}
+
+struct BorrowedClosure<T: ?Sized> {
+    data: WasmSlice,
+    unwind_safe: bool,
+    _marker: PhantomData<T>,
 }
 
 unsafe extern "C" fn destroy<T: ?Sized>(a: usize, mut b: usize) {
@@ -565,6 +924,19 @@ where
     }
 }
 
+impl<T> WasmDescribe for BorrowedClosure<T>
+where
+    T: WasmClosure + ?Sized,
+{
+    #[cfg_attr(wasm_bindgen_unstable_test_coverage, coverage(off))]
+    fn describe() {
+        inform(CLOSURE);
+        inform(0);
+        inform(T::IS_MUT as u32);
+        T::describe();
+    }
+}
+
 impl<T> IntoWasmAbi for OwnedClosure<T>
 where
     T: WasmClosure + ?Sized,
@@ -578,6 +950,20 @@ where
             ptr: a as u32,
             len: b as u32,
         }
+    }
+}
+
+impl<T> IntoWasmAbi for BorrowedClosure<T>
+where
+    T: WasmClosure + ?Sized,
+{
+    type Abi = WasmSlice;
+    fn into_abi(self) -> WasmSlice {
+        let WasmSlice { ptr, mut len } = self.data;
+        if self.unwind_safe {
+            len |= 0x80000000;
+        }
+        WasmSlice { ptr, len }
     }
 }
 
@@ -602,8 +988,7 @@ where
 
     fn into_abi(self) -> WasmSlice {
         use core::mem::ManuallyDrop;
-        let (a, b): (usize, usize) =
-            unsafe { mem::transmute_copy(&ManuallyDrop::new(self.closure)) };
+        let (a, b): (usize, usize) = unsafe { mem::transmute_copy(&ManuallyDrop::new(self.data)) };
         // Pack unwind_safe into most significant bit (bit 31) of vtable
         let b_with_flag = if self.unwind_safe {
             (b as u32) | 0x80000000
@@ -617,7 +1002,7 @@ where
     }
 }
 
-impl<T> WasmDescribe for Closure<T>
+impl<T> WasmDescribe for ScopedClosure<'_, T>
 where
     T: WasmClosure + ?Sized,
 {
@@ -627,19 +1012,59 @@ where
     }
 }
 
-// `Closure` can only be passed by reference to imports.
-impl<T> IntoWasmAbi for &Closure<T>
+// `ScopedClosure` can be passed by reference to imports (for any lifetime).
+impl<T> IntoWasmAbi for &ScopedClosure<'_, T>
 where
     T: WasmClosure + ?Sized,
 {
     type Abi = u32;
 
     fn into_abi(self) -> u32 {
-        (&*self.js).into_abi()
+        (&self.js).into_abi()
     }
 }
 
-impl<T> OptionIntoWasmAbi for &Closure<T>
+impl<T> OptionIntoWasmAbi for &ScopedClosure<'_, T>
+where
+    T: WasmClosure + ?Sized,
+{
+    fn none() -> Self::Abi {
+        0
+    }
+}
+
+/// `'static` closures can be passed by value to JS, transferring ownership.
+///
+/// This is useful for one-shot callbacks where you want JS to own the closure.
+/// The closure will be cleaned up by JS GC (if weak references are supported)
+/// or will leak (if weak references are not supported).
+///
+/// # Example
+///
+/// ```ignore
+/// #[wasm_bindgen]
+/// extern "C" {
+///     fn set_one_shot_callback(cb: Closure<dyn FnMut()>);
+/// }
+///
+/// let cb = Closure::new(|| { /* ... */ });
+/// set_one_shot_callback(cb);  // Ownership transferred to JS
+/// // No need to store or forget the closure
+/// ```
+impl<T> IntoWasmAbi for ScopedClosure<'static, T>
+where
+    T: WasmClosure + ?Sized,
+{
+    type Abi = u32;
+
+    fn into_abi(self) -> u32 {
+        let idx = self.js.idx;
+        mem::forget(self);
+        idx
+    }
+}
+
+impl<T> OptionIntoWasmAbi for ScopedClosure<'static, T>
 where
     T: WasmClosure + ?Sized,
 {
@@ -650,31 +1075,26 @@ where
 
 fn _check() {
     fn _assert<T: IntoWasmAbi>() {}
-    _assert::<&Closure<dyn Fn()>>();
-    _assert::<&Closure<dyn Fn(String)>>();
-    _assert::<&Closure<dyn Fn() -> String>>();
-    _assert::<&Closure<dyn FnMut()>>();
-    _assert::<&Closure<dyn FnMut(String)>>();
-    _assert::<&Closure<dyn FnMut() -> String>>();
+    // By reference (any lifetime)
+    _assert::<&ScopedClosure<dyn Fn()>>();
+    _assert::<&ScopedClosure<dyn Fn(String)>>();
+    _assert::<&ScopedClosure<dyn Fn() -> String>>();
+    _assert::<&ScopedClosure<dyn FnMut()>>();
+    _assert::<&ScopedClosure<dyn FnMut(String)>>();
+    _assert::<&ScopedClosure<dyn FnMut() -> String>>();
+    // By value (only 'static)
+    _assert::<ScopedClosure<'static, dyn Fn()>>();
+    _assert::<ScopedClosure<'static, dyn FnMut()>>();
+    _assert::<Closure<dyn Fn()>>();
+    _assert::<Closure<dyn FnMut()>>();
 }
 
-impl<T> fmt::Debug for Closure<T>
+impl<T> fmt::Debug for ScopedClosure<'_, T>
 where
     T: ?Sized,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Closure {{ ... }}")
-    }
-}
-
-impl<T> Drop for Closure<T>
-where
-    T: ?Sized,
-{
-    fn drop(&mut self) {
-        // Decrease refcount on the JS side, this will automatically free
-        // the Rust data if we're the last owner.
-        self.js._wbg_cb_unref();
     }
 }
 
@@ -704,4 +1124,30 @@ impl<T: ?Sized + WasmClosure> IntoWasmClosure<T> for T {
     fn unsize(self: Box<Self>) -> Box<T> {
         self
     }
+}
+
+/// Trait for converting a reference to a closure into a trait object reference.
+///
+/// This trait is not stable and it's not recommended to use this in bounds or
+/// implement yourself.
+#[doc(hidden)]
+pub trait UnsizeClosureRef<T: ?Sized> {
+    /// The `'static` version of `T`. For example, if `T` is `dyn Fn() + 'a`,
+    /// then `Static` is `dyn Fn()` (implicitly `'static`).
+    type Static: ?Sized + WasmClosure;
+
+    fn unsize_closure_ref(&self) -> &T;
+}
+
+/// Trait for converting a mutable reference to a closure into a trait object reference.
+///
+/// This trait is not stable and it's not recommended to use this in bounds or
+/// implement yourself.
+#[doc(hidden)]
+pub trait UnsizeClosureRefMut<T: ?Sized> {
+    /// The `'static` version of `T`. For example, if `T` is `dyn FnMut() + 'a`,
+    /// then `Static` is `dyn FnMut()` (implicitly `'static`).
+    type Static: ?Sized + WasmClosure;
+
+    fn unsize_closure_ref(&mut self) -> &mut T;
 }
