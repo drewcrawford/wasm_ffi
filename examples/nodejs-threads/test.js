@@ -12,6 +12,7 @@
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 const assert = require('assert');
 
+
 // Path to built WASM module (in dist for CI, pkg for local dev)
 const WASM_PATH = '../dist/nodejs-threads/nodejs_threads.js';
 
@@ -135,7 +136,6 @@ if (isMainThread) {
         console.log(`  Worker reports final size: ${growthResult.finalSize} bytes`);
         console.log(`  Main thread now sees: ${sizeAfterWorker} bytes`);
         console.log('  ✓ Memory growth is visible across threads\n');
-
         console.log('=== All tests passed! ===');
     }
 

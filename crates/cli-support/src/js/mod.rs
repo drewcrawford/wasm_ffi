@@ -1030,10 +1030,9 @@ export const __wbg_memory: WebAssembly.Memory;
             let start_call = if needs_manual_start {
                 format!(
                     r#"
-    if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % {page_size} !== 0)) {{
-        throw new Error('invalid stack size');
+    if (typeof thread_stack_size !== "undefined" && (typeof thread_stack_size !== "number" || thread_stack_size === 0 || thread_stack_size % {page_size} !== 0)) {{
+        throw new Error("invalid stack size");
     }}
-
     wasm.__wbindgen_start(thread_stack_size);"#,
                     page_size = crate::transforms::threads::PAGE_SIZE,
                 )
@@ -1114,7 +1113,6 @@ export {{ wasm as __wasm, wasmModule as __wbg_wasm_module, memory as __wbg_memor
     if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % {page_size} !== 0)) {{
         throw new Error('invalid stack size');
     }}
-
     wasm.__wbindgen_start(thread_stack_size);"#,
                     page_size = crate::transforms::threads::PAGE_SIZE,
                 )
@@ -1762,6 +1760,17 @@ if (require('worker_threads').isMainThread) {{
     fn expose_wasm_vector_len(&mut self) {
         intrinsic(&mut self.intrinsics, "wasm_vector_len".into(), || {
             "\nlet WASM_VECTOR_LEN = 0;\n".into()
+        });
+    }
+
+    fn expose_panic_error(&mut self) {
+        intrinsic(&mut self.intrinsics, "panic_error".into(), || {
+            "class PanicError extends Error {}
+            Object.defineProperty(PanicError.prototype, 'name', {
+                value: PanicError.name,
+            });
+            "
+            .into()
         });
     }
 
@@ -2846,17 +2855,6 @@ if (require('worker_threads').isMainThread) {{
                     "state => state.dtor(state.a, state.b)"
                 }
             )
-            .into()
-        });
-    }
-
-    fn expose_panic_error(&mut self) {
-        intrinsic(&mut self.intrinsics, "panic_error".into(), || {
-            "class PanicError extends Error {}
-            Object.defineProperty(PanicError.prototype, 'name', {
-                value: PanicError.name,
-            });
-            "
             .into()
         });
     }
@@ -4374,6 +4372,7 @@ if (require('worker_threads').isMainThread) {{
                 }
                 base
             }
+
             Intrinsic::PanicError => {
                 assert_eq!(args.len(), 1);
                 self.expose_panic_error();

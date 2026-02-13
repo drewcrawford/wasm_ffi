@@ -109,7 +109,6 @@ exports.initSync = function(opts) {
     if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) {
         throw new Error('invalid stack size');
     }
-
     wasm.__wbindgen_start(thread_stack_size);
     __initialized = true;
     return wasm;
