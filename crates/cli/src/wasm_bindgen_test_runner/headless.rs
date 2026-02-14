@@ -182,8 +182,11 @@ pub fn run(
     let max = Duration::new(test_timeout, 0);
     let mut shell_cleared = false;
     let mut output_buf = String::new();
+    let mut output_offset = 0usize;
     while start.elapsed() < max {
-        let new_output = client.text_content(&id, "#output", output_buf.len())?;
+        let output = client.text_content(&id, "#output", output_offset)?;
+        let new_output = output.chunk;
+        output_offset = output.next_offset;
 
         // Print new output as it appears (real-time streaming)
         if !new_output.is_empty() {
@@ -209,7 +212,10 @@ pub fn run(
     // what happened. Output was already streamed in real-time above.
 
     // Print any remaining output that might have arrived after the last poll
-    let remaining_output = client.text_content(&id, "#output", output_buf.len())?;
+    let remaining_output = {
+        let output = client.text_content(&id, "#output", output_offset)?;
+        output.chunk
+    };
     if !remaining_output.is_empty() {
         io::stdout().lock().write_all(remaining_output.as_bytes())?;
         output_buf.push_str(&remaining_output);
@@ -227,9 +233,10 @@ pub fn run(
     if !output_buf.contains("test result: ok") {
         // Read console output incrementally to avoid exceeding WebDriver response limits
         let mut has_console = false;
-        let mut console_offset = 0;
+        let mut console_offset = 0usize;
         loop {
-            let chunk = client.text_content(&id, "#console_output", console_offset)?;
+            let output = client.text_content(&id, "#console_output", console_offset)?;
+            let chunk = output.chunk;
             if chunk.is_empty() {
                 break;
             }
@@ -238,7 +245,7 @@ pub fn run(
                 has_console = true;
             }
             io::stdout().lock().write_all(tab(&chunk).as_bytes())?;
-            console_offset += chunk.len();
+            console_offset = output.next_offset;
         }
 
         bail!("some tests failed")
@@ -533,7 +540,12 @@ impl Client {
         Ok(())
     }
 
-    fn text_content(&mut self, id: &str, selector: &str, offset: usize) -> Result<String, Error> {
+    fn text_content(
+        &mut self,
+        id: &str,
+        selector: &str,
+        offset: usize,
+    ) -> Result<TextChunk, Error> {
         #[derive(Serialize)]
         struct Request {
             script: String,
@@ -543,17 +555,37 @@ impl Client {
         struct Response {
             value: serde_json::Value,
         }
+        #[derive(Deserialize)]
+        struct Value {
+            chunk: String,
+            next_offset: usize,
+        }
         let request = Request {
             script: format!(
-                "return document.querySelector({}).textContent.slice(arguments[0])",
+                "const el = document.querySelector({}); \
+                 if (!el || el.textContent == null) {{ \
+                     return {{ chunk: \"\", next_offset: arguments[0] }}; \
+                 }} \
+                 const text = el.textContent; \
+                 const start = Math.min(arguments[0], text.length); \
+                 return {{ chunk: text.slice(start), next_offset: text.length }};",
                 serde_json::to_string(selector)?
             ),
             args: vec![offset],
         };
         let x: Response = self.post(&format!("/session/{id}/execute/sync"), &request)?;
         match x.value {
-            serde_json::Value::String(s) => Ok(s),
-            serde_json::Value::Null => Ok(String::new()),
+            serde_json::Value::Object(_) => {
+                let value: Value = serde_json::from_value(x.value)?;
+                Ok(TextChunk {
+                    chunk: value.chunk,
+                    next_offset: value.next_offset,
+                })
+            }
+            serde_json::Value::Null => Ok(TextChunk {
+                chunk: String::new(),
+                next_offset: offset,
+            }),
             other => bail!("unexpected response from execute/sync: {other:?}"),
         }
     }
@@ -620,6 +652,11 @@ fn tab(s: &str) -> String {
         result.push('\n');
     }
     result
+}
+
+struct TextChunk {
+    chunk: String,
+    next_offset: usize,
 }
 
 struct BackgroundChild<'a> {
