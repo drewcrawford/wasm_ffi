@@ -11,6 +11,16 @@ Now doctests are detected and executed properly. Supports:
 - Shared worker (`wasm_bindgen_test_configure!(run_in_shared_worker)`)
 - Service worker (`wasm_bindgen_test_configure!(run_in_service_worker)`)
 
+# node-esm-threads-debug-wasm-export
+
+Fix `SyntaxError: Duplicate export of '__wasm'` in Node.js ESM + threads + debug mode.
+
+Root cause was two separate `__wasm` exports in generated JS:
+- Node ESM threads initialization template exported `__wasm`
+- Debug export path also exported `__wasm`
+
+The debug re-export is now suppressed for the Node ESM + threads path, so `__wasm` is exported exactly once. Added a regression test in `crates/cli/tests/wasm-bindgen/reference.rs` to prevent this from regressing.
+
 # nodejs-threads (UPSTREAMED)
 
 Add Node.js `worker_threads` support for atomics builds. Supports both CommonJS (`--target nodejs`) and ESM (`--target experimental-nodejs-module`) targets. When targeting Node.js with atomics enabled, wasm-bindgen now generates:
