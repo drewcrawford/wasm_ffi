@@ -162,7 +162,12 @@ impl InstructionBuilder<'_, '_> {
             Descriptor::Option(d) => self.outgoing_option(d)?,
             Descriptor::Result(d) => self.outgoing_result(d)?,
 
-            Descriptor::Function(_) | Descriptor::Slice(_) => {
+            Descriptor::Function(descriptor) => {
+                // By-value ImmediateClosure<dyn Fn(...)> (immutable)
+                self.outgoing_function(false, descriptor, None)?;
+            }
+
+            Descriptor::Slice(_) => {
                 bail!("unsupported argument type for calling JS function from Rust: {arg:?}")
             }
 
@@ -175,7 +180,7 @@ impl InstructionBuilder<'_, '_> {
             Descriptor::NonNull => self.outgoing_i32(AdapterType::NonNull),
 
             Descriptor::Closure(d) => {
-                self.outgoing_function(d.mutable, &d.function, Some(d.dtor_idx))?
+                self.outgoing_function(d.mutable, &d.function, Some(d.owned))?
             }
         }
         Ok(())
@@ -227,6 +232,17 @@ impl InstructionBuilder<'_, '_> {
                 self.outgoing_function(mutable, descriptor, None)?;
             }
 
+            // ImmediateClosure<dyn FnMut(...)> emits RefMut(Function(...)) to
+            // signal that a reentrancy guard is needed in the JS wrapper.
+            Descriptor::RefMut(inner) => match inner.as_ref() {
+                Descriptor::Function(descriptor) => {
+                    self.outgoing_function(true, descriptor, None)?;
+                }
+                _ => bail!(
+                    "unsupported reference argument type for calling JS function from Rust: {arg:?}"
+                ),
+            },
+
             _ => bail!(
                 "unsupported reference argument type for calling JS function from Rust: {arg:?}"
             ),
@@ -257,7 +273,7 @@ impl InstructionBuilder<'_, '_> {
         &mut self,
         mutable: bool,
         descriptor: &Function,
-        dtor_idx: Option<u32>,
+        owned_closure: Option<bool>,
     ) -> Result<(), Error> {
         let mut descriptor = descriptor.clone();
         // synthesize the a/b arguments that aren't present in the
@@ -266,10 +282,10 @@ impl InstructionBuilder<'_, '_> {
         descriptor.arguments.insert(0, Descriptor::I32);
         descriptor.arguments.insert(0, Descriptor::I32);
         let shim = self.export_table_element(descriptor.shim_idx);
-        let dtor = match dtor_idx {
-            None => ClosureDtor::RefLegacy,
-            Some(0) => ClosureDtor::Borrowed,
-            Some(idx) => ClosureDtor::OwnClosure(self.export_table_element(idx)),
+        let dtor = match owned_closure {
+            None => ClosureDtor::Immediate,
+            Some(false) => ClosureDtor::Borrowed,
+            Some(true) => ClosureDtor::OwnClosure,
         };
         let adapter = self.cx.export_adapter(shim, descriptor)?;
         self.instruction(

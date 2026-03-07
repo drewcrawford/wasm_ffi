@@ -35,6 +35,11 @@ struct Context<'a> {
     thread_count: Option<ThreadCount>,
     support_start: bool,
     linked_modules: bool,
+    /// Tracks the descriptor signature (arguments, ret, inner_ret) used when
+    /// creating each export adapter. Used to avoid incorrect deduplication
+    /// when wasm-ld ICF merges invoke functions for different closure types
+    /// into the same export.
+    export_adapter_sigs: HashMap<AdapterId, (Vec<Descriptor>, Descriptor, Option<Descriptor>)>,
 }
 
 struct InstructionBuilder<'a, 'b> {
@@ -66,6 +71,7 @@ pub fn process(
         thread_count,
         support_start: bindgen.emit_start,
         linked_modules: bindgen.split_linked_modules,
+        export_adapter_sigs: Default::default(),
     };
     cx.init()?;
 
@@ -77,6 +83,7 @@ pub fn process(
         cx.discover_main()?;
     }
     cx.find_exn_store();
+    cx.find_destroy_closure();
 
     cx.verify()?;
 
@@ -214,18 +221,7 @@ impl<'a> Context<'a> {
             Descriptor::Unit,
             AuxImport::Intrinsic(Intrinsic::ObjectDropRef),
         )?;
-        self.add_aux_import_to_import_map(
-            "__wbindgen_object_is_null_or_undefined",
-            vec![Descriptor::Ref(Box::new(Descriptor::Externref))],
-            Descriptor::Boolean,
-            AuxImport::Intrinsic(Intrinsic::ObjectIsNullOrUndefined),
-        )?;
-        self.add_aux_import_to_import_map(
-            "__wbindgen_object_is_undefined",
-            vec![Descriptor::Ref(Box::new(Descriptor::Externref))],
-            Descriptor::Boolean,
-            AuxImport::Intrinsic(Intrinsic::ObjectIsUndefined),
-        )?;
+
         for import in imports_to_delete {
             self.module.imports.delete(import);
         }
@@ -574,7 +570,7 @@ impl<'a> Context<'a> {
             None => {
                 let base_name = export.function.name.to_string();
                 if let Some(ref ns) = export.js_namespace {
-                    format!("{}_{base_name}", ns.join("_"))
+                    format!("{}__{base_name}", ns.join("__"))
                 } else {
                     base_name
                 }
@@ -652,6 +648,7 @@ impl<'a> Context<'a> {
                 .map(|v| AuxFunctionArgumentData {
                     name: v.name,
                     ty_override: v.ty_override.map(String::from),
+                    optional: v.optional,
                     desc: v.desc.map(String::from),
                 })
                 .collect::<Vec<_>>(),
@@ -1097,6 +1094,8 @@ impl<'a> Context<'a> {
 
     fn enum_(&mut self, enum_: decode::Enum<'_>) -> Result<(), Error> {
         let signed = enum_.signed;
+        let qualified_name =
+            wasm_bindgen_shared::qualified_name(enum_.js_namespace.as_deref(), enum_.name);
         let aux = AuxEnum {
             name: enum_.name.to_string(),
             comments: concatenate_comments(&enum_.comments),
@@ -1122,7 +1121,7 @@ impl<'a> Context<'a> {
         let mut result = Ok(());
         self.aux
             .enums
-            .entry(aux.name.clone())
+            .entry(qualified_name)
             .and_modify(|existing| {
                 result = Err(anyhow!("duplicate enums:\n{existing:?}\n{aux:?}"));
             })
@@ -1131,9 +1130,12 @@ impl<'a> Context<'a> {
     }
 
     fn struct_(&mut self, struct_: decode::Struct<'_>) -> Result<(), Error> {
+        let qualified_name =
+            wasm_bindgen_shared::qualified_name(struct_.js_namespace.as_deref(), struct_.name);
+        let rust_name = struct_.rust_name;
         for field in struct_.fields {
-            let getter = wasm_bindgen_shared::struct_field_get(struct_.name, field.name);
-            let setter = wasm_bindgen_shared::struct_field_set(struct_.name, field.name);
+            let getter = wasm_bindgen_shared::struct_field_get(&qualified_name, field.name);
+            let setter = wasm_bindgen_shared::struct_field_set(&qualified_name, field.name);
             let descriptor = match self.descriptors.remove(&getter) {
                 None => continue,
                 Some(d) => d,
@@ -1156,7 +1158,7 @@ impl<'a> Context<'a> {
                     asyncness: false,
                     comments: concatenate_comments(&field.comments),
                     kind: AuxExportKind::Method {
-                        class: struct_.name.to_string(),
+                        class: rust_name.to_string(),
                         name: field.name.to_string(),
                         receiver: AuxReceiverKind::Borrowed,
                         kind: AuxExportedMethodKind::Getter,
@@ -1191,7 +1193,7 @@ impl<'a> Context<'a> {
                     asyncness: false,
                     comments: concatenate_comments(&field.comments),
                     kind: AuxExportKind::Method {
-                        class: struct_.name.to_string(),
+                        class: rust_name.to_string(),
                         name: field.name.to_string(),
                         receiver: AuxReceiverKind::Borrowed,
                         kind: AuxExportedMethodKind::Setter,
@@ -1207,6 +1209,8 @@ impl<'a> Context<'a> {
         }
         let aux = AuxStruct {
             name: struct_.name.to_string(),
+            rust_name: rust_name.to_string(),
+            qualified_name: qualified_name.clone(),
             comments: concatenate_comments(&struct_.comments),
             is_inspectable: struct_.is_inspectable,
             generate_typescript: struct_.generate_typescript,
@@ -1218,20 +1222,20 @@ impl<'a> Context<'a> {
         };
         self.aux.structs.push(aux);
 
-        let wrap_constructor = wasm_bindgen_shared::new_function(struct_.name);
+        let wrap_constructor = wasm_bindgen_shared::new_function(&qualified_name);
         self.add_aux_import_to_import_map(
             &wrap_constructor,
             vec![Descriptor::I32],
             Descriptor::Externref,
-            AuxImport::WrapInExportedClass(struct_.name.to_string()),
+            AuxImport::WrapInExportedClass(rust_name.to_string()),
         )?;
 
-        let unwrap_fn = wasm_bindgen_shared::unwrap_function(struct_.name);
+        let unwrap_fn = wasm_bindgen_shared::unwrap_function(&qualified_name);
         self.add_aux_import_to_import_map(
             &unwrap_fn,
             vec![Descriptor::Ref(Box::new(Descriptor::Externref))],
             Descriptor::I32,
-            AuxImport::UnwrapExportedClass(struct_.name.to_string()),
+            AuxImport::UnwrapExportedClass(rust_name.to_string()),
         )?;
 
         Ok(())
@@ -1497,18 +1501,40 @@ impl<'a> Context<'a> {
     /// `signature` specified.
     fn export_adapter(
         &mut self,
-        export: ExportId,
+        mut export: ExportId,
         signature: Function,
     ) -> Result<AdapterId, Error> {
-        // Same export might be requested multiple times due to codegen-units.
-        // Check if we already have an adapter for it.
-        if let Some((_, id)) = self
+        // Same export might be requested multiple times due to codegen-units,
+        // or because wasm-ld ICF merged invoke functions for different closure
+        // types into the same function. Only reuse an existing adapter if the
+        // signature also matches (ignoring shim_idx which varies across
+        // codegen-units).
+        let sig_key = (
+            signature.arguments.clone(),
+            signature.ret.clone(),
+            signature.inner_ret.clone(),
+        );
+        if let Some((_, adapter_id)) = self
             .adapters
             .exports
             .iter()
             .find(|(export_id, _)| *export_id == export)
         {
-            return Ok(*id);
+            if self.export_adapter_sigs.get(adapter_id) == Some(&sig_key) {
+                // Same ExportId and signature (codegen-units duplicate).
+                return Ok(*adapter_id);
+            } else {
+                // Same ExportId but different signature: ICF merged two different
+                // closure types. Create a new export with a unique name so each
+                // adapter gets its own JS function.
+                let old_export = self.module.exports.get(export);
+                let name = format!("{}_{}", old_export.name, self.adapters.exports.len());
+                let func_id = match old_export.item {
+                    walrus::ExportItem::Function(f) => f,
+                    _ => unreachable!(),
+                };
+                export = self.module.exports.add(&name, func_id);
+            }
         }
 
         // Figure out how to translate all the incoming arguments ...
@@ -1592,6 +1618,7 @@ impl<'a> Context<'a> {
         );
 
         self.adapters.exports.push((export, id));
+        self.export_adapter_sigs.insert(id, sig_key);
 
         Ok(id)
     }
@@ -1674,6 +1701,18 @@ impl<'a> Context<'a> {
             .exports
             .iter()
             .find(|e| e.name == "__wbindgen_exn_store")
+            .and_then(|e| match e.item {
+                walrus::ExportItem::Function(f) => Some(f),
+                _ => None,
+            });
+    }
+
+    fn find_destroy_closure(&mut self) {
+        self.aux.destroy_closure = self
+            .module
+            .exports
+            .iter()
+            .find(|e| e.name == "__wbindgen_destroy_closure")
             .and_then(|e| match e.item {
                 walrus::ExportItem::Function(f) => Some(f),
                 _ => None,

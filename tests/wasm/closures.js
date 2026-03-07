@@ -229,3 +229,55 @@ exports.closure_fn_with_call = f => {
 exports.closure_fn_with_call_arg = (f, value) => {
   f(value);
 };
+
+// Test for ImmediateClosure
+exports.immediate_closure_call = f => {
+  f();
+};
+
+exports.immediate_closure_call_arg = (f, value) => {
+  f(value);
+};
+
+exports.immediate_closure_call_ret = (f, value) => {
+  return f(value);
+};
+
+exports.immediate_closure_fn_call = f => {
+  f();
+};
+
+exports.immediate_closure_catches_panic = f => {
+  try {
+    f();
+    return false;
+  } catch (e) {
+    return true;
+  }
+};
+
+// Calls the closure, which may call immediate_closure_fnmut_reentrant_invoke
+// to trigger reentrancy
+let IMMEDIATE_REENTRANT_CB = null;
+exports.immediate_closure_fnmut_reentrant = f => {
+  IMMEDIATE_REENTRANT_CB = f;
+  f();
+  IMMEDIATE_REENTRANT_CB = null;
+};
+
+// Called from inside the closure to attempt reentrant invocation
+exports.immediate_closure_fnmut_reentrant_invoke = () => {
+  IMMEDIATE_REENTRANT_CB();
+};
+
+// Same pattern for Fn (immutable) closures
+let IMMEDIATE_FN_REENTRANT_CB = null;
+exports.immediate_closure_fn_reentrant = f => {
+  IMMEDIATE_FN_REENTRANT_CB = f;
+  f();
+  IMMEDIATE_FN_REENTRANT_CB = null;
+};
+
+exports.immediate_closure_fn_reentrant_invoke = () => {
+  IMMEDIATE_FN_REENTRANT_CB();
+};

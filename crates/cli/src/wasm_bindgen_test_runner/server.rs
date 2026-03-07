@@ -459,7 +459,8 @@ SharedWorker.prototype = __wbg_OriginalSharedWorker.prototype;
                             }}
                             await new Promise((resolve) => {{
                                 navigator.serviceWorker.addEventListener('controllerchange', () => {{
-                                    if (navigator.serviceWorker.controller.scriptURL != location.href + url) {{
+                                    const expected_script_url = new URL(url, location.origin + location.pathname).href;
+                                    if (navigator.serviceWorker.controller.scriptURL != expected_script_url) {{
                                         throw "`wasm-bindgen-test-runner` does not support running multiple service worker tests at the same time"
                                     }}
                                     resolve();

@@ -5,21 +5,211 @@
 
 ### Added
 
+* Added `VideoFrame`, `VideoColorSpace`, and related WebCodecs dictionaries/enums to `web-sys`.
+  [#5008](https://github.com/wasm-bindgen/wasm-bindgen/pull/5008)
+
+### Changed
+
+* Replaced per-closure generic destructors with a single `__wbindgen_destroy_closure`
+  export.
+  [#5019](https://github.com/wasm-bindgen/wasm-bindgen/pull/5019)
+
+* Refactored the headless browser test runner logging pipeline for dramatically improved
+  performance (>400x faster on Chrome, >10x on Firefox, ~5x on Safari). Switched to
+  incremental DOM scraping with `textContent.slice(offset)`, append-only output semantics,
+  unified log capture across all log levels on failure, and browser-specific invisible-div
+  optimizations (`display:none` for Chrome/Firefox, `visibility:hidden` for Safari).
+  [#4960](https://github.com/wasm-bindgen/wasm-bindgen/pull/4960)
+
+* TTY-gated status/clear output in the test runner shell to avoid `\r` control-character
+  artifacts in non-interactive (CI) environments.
+  [#4960](https://github.com/wasm-bindgen/wasm-bindgen/pull/4960)
+  
+* Added `bench_console_log_10mb` benchmark alongside the existing 1MB benchmark for the
+  headless test runner. The main branch cannot complete this benchmark at any volume.
+  [#4960](https://github.com/wasm-bindgen/wasm-bindgen/pull/4960)
+
+### Fixed
+
+* Fixed `JsOption::new()` to use `undefined` instead of `null`, to be compatible with `Option::None` and JS default parameters.
+  [#5023](https://github.com/wasm-bindgen/wasm-bindgen/pull/5023)
+
+* Fixed headless test runner emitting `\r` carriage-return sequences in non-TTY environments,
+  which polluted captured logs in CI and complicated output-matching tests.
+  [#4960](https://github.com/wasm-bindgen/wasm-bindgen/pull/4960)
+
+* Fixed headless test runner printing incomplete and out-of-order log output on test failures
+  by merging all five log levels into a single unified output div.
+  [#4960](https://github.com/wasm-bindgen/wasm-bindgen/pull/4960)
+
+* Fixed large test outputs (10MB+) causing oversized WebDriver responses that were either
+  extremely slow or crashed completely, by switching to incremental streaming output collection.
+  [#4960](https://github.com/wasm-bindgen/wasm-bindgen/pull/4960)
+### Removed
+
+## [0.2.114](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.113...0.2.114)
+
+### Added
+
+* Added `[WbgGeneric]` WebIDL extended attribute for opting stable dictionary and interface
+  definitions into typed generics (the same signatures unstable APIs use), avoiding legacy
+  `&JsValue` fallbacks. Applied to all new VideoFrame-related types.
+  [#5008](https://github.com/wasm-bindgen/wasm-bindgen/pull/5008)
+
+* Added `unchecked_optional_param_type` attribute for marking exported function parameters as
+  optional in TypeScript (`?:`) and JSDoc (`[paramName]`) output. Mutually exclusive with
+  `unchecked_param_type`. Required parameters after optional parameters are rejected at compile time.
+  [#5002](https://github.com/wasm-bindgen/wasm-bindgen/pull/5002)
+
+* Added termination detection for `panic=unwind` builds. When a non-JS exception (e.g. a Rust
+  panic) escapes from Wasm, the instance is marked as terminated and subsequent calls from JS
+  into Wasm will throw a `Module terminated` error instead of re-entering corrupted state.
+  [#5005](https://github.com/wasm-bindgen/wasm-bindgen/pull/5005)
+
+* When `--reset-state` is combined with `panic=unwind` builds, the Wasm instance is
+  automatically reset after a fatal termination, allowing subsequent calls to succeed
+  instead of throwing a `Module terminated` error.
+  [#5013](https://github.com/wasm-bindgen/wasm-bindgen/pull/5013)
+
+### Changed
+
+* Replaced runtime `0x80000000` vtable bit-flag for closure unwind safety with a
+  compile-time `const UNWIND_SAFE: bool` generic on the invoke shim, `OwnedClosure`,
+  and `BorrowedClosure`. Removes `OwnedClosureUnwind` and deduplicates internal
+  closure helpers. The public API is unchanged.
+  [#5003](https://github.com/wasm-bindgen/wasm-bindgen/pull/5003)
+
+* Removed unused `IntoWasmClosureRef*::WithLifetime` types,
+  `WasmClosure::to_wasm_slice`, and a lifetime from
+  `IntoWasmClosureRef*`; moved `Static` associated type into `WasmClosure`.
+  [#5003](https://github.com/wasm-bindgen/wasm-bindgen/pull/5003)
+
+### Fixed
+
+* Fixed exported structs/enums/functions with the same `js_name` but different
+  `js_namespace` values producing symbol collisions at compile time, by deriving
+  internal wasm symbols from a qualified name that includes the namespace.
+  [#4977](https://github.com/wasm-bindgen/wasm-bindgen/pull/4977)
+
+* Fixed soundness hole in `ScopedClosure`'s `UpcastFrom` that allowed to extend the lifetime after the original `ScopedClosure` was dropped.
+  [#5006](https://github.com/wasm-bindgen/wasm-bindgen/pull/5006)
+
+## [0.2.113](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.112...0.2.113)
+
+### Changed
+
+* Reduced usage of `unsafe` code: replaced `transmute`/`transmute_copy` with safe
+  alternatives for `Boolean`/`Null`/`Undefined` constants and `ArrayTuple` conversions,
+  unified duplicated `AsRef`/`From` impls for generic imported types, and removed the
+  `__wbindgen_object_is_undefined` intrinsic in favor of a safe Rust-side equivalent.
+  [#4993](https://github.com/wasm-bindgen/wasm-bindgen/pull/4993)
+
+* Renamed `__wbindgen_object_is_null_or_undefined` intrinsic to
+  `__wbindgen_is_null_or_undefined` and removed the `__wbindgen_object_is_undefined`
+  intrinsic, replacing it with a safe Rust-side check. The `is_null_or_undefined` check
+  now uses safe `&JsValue` ABI instead of raw `u32`.
+  [#4994](https://github.com/wasm-bindgen/wasm-bindgen/pull/4994)
+### Fixed
+
+* Fixed incorrect method naming for stable web-sys methods that reference unstable
+  types (e.g. `texImage2D` taking a `VideoFrame` parameter). These methods were
+  being named in a separate unstable expansion namespace, producing overly-short
+  names like `tex_image_2d` instead of the correct
+  `tex_image_2d_with_u32_and_u32_and_video_frame`. The fix separates the signature
+  classification to distinguish "from unstable IDL" (authoritative overrides) from
+  "stable method using an unstable type", ensuring the latter is named as part of
+  the stable expansion.
+  [#4991](https://github.com/wasm-bindgen/wasm-bindgen/pull/4991)
+
+## [0.2.112](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.111...0.2.112)
+
+### Removed
+
+* Removed `ImmediateClosure` type introduced in 0.2.109. Stack-borrowed `&dyn Fn` / `&mut dyn FnMut`
+  closures are now treated as unwind safe by default (panics are caught and converted to JS exceptions
+  with proper unwinding). A unified `ScopedClosure::immediate` approach may be revisited in a future
+  release.
+  [#4986](https://github.com/wasm-bindgen/wasm-bindgen/pull/4986)
+
+## [0.2.111](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.110...0.2.111)
+
+### Fixed
+
+* Restored backwards compatibility for breaking changes introduced in 0.2.110:
+  re-added deprecated `Promise::then2` binding, reverted `Promise::all_settled`
+  stable signature to take `&JsValue` instead of owned `Object`, and added
+  default type parameters (`= JsValue`) to `ArrayIntoIter`, `ArrayIter`, and
+  `Iter` structs.
+  [#4979](https://github.com/wasm-bindgen/wasm-bindgen/pull/4979)
+
+## [0.2.110](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.109...0.2.110)
+
+### Changed
+
+* Refactor new closure methods - ensures that all closure constructor functions have the variants `Closure::foo()`, `Closure::foo_aborting()` and
+  `Closure::foo_assert_unwind_safe()` this then fully allows switching from the UnwindSafe bound now being applies on foo() to use one of the
+  alternatives, given these limitations of AssertUnwindSafe. The same applies to `ImmediateClosure`. In addition, mutable reentrancy guards are
+  added for `ImmediateClosure`, and it is updated to be pass-by-value as well.
+  [#4975](https://github.com/wasm-bindgen/wasm-bindgen/pull/4975)
+
+### Fixed
+
+* Fixed a regression where Array.of1,... variants using generic `Array<T>` broke inference.
+  Reverted to use non-generic JsValue arguments. In addition extends generic class hoisting to
+  for constructors to also include `static_method_of` methods returning the own type, to allow
+  `Array::of` generic to now be on the `Array<T>` impl block.
+  [#4974](https://github.com/wasm-bindgen/wasm-bindgen/pull/4974)
+
+## [0.2.109](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.108...0.2.109)
+
+### Added
+
+* Added support for erasable generic type parameters on imported JavaScript types,
+  using sound type erasure in JS bindgen boundary. Includes updated js-sys bindings
+  with generic implementations for many standard JS types and functions including
+  `Array<T>`, `Promise<T>`, `Map<K, V>`, `Iterator<T>`, and more.
+  [#4876](https://github.com/wasm-bindgen/wasm-bindgen/pull/4876)
+
+* Added `ScopedClosure<'a, T>` as a unified closure type with lifetime parameter. `ScopedClosure::borrow(&f)` (for immutable `Fn`) and `ScopedClosure::borrow_mut(&mut f)` (for mutable `FnMut`) create borrowed closures that can capture non-`'static` references, ideal for immediate/synchronous JS callbacks. `Closure<T>` is now a type alias for `ScopedClosure<'static, T>`, maintaining backwards compatibility. Also added `IntoWasmAbi` implementation for `Closure<T>` enabling pass-by-value ownership transfer to JavaScript.
+
+* Added `ImmediateClosure<'a, T>` as a lightweight, unwind-safe replacement for
+  `&dyn FnMut` in immediate/synchronous callbacks. Unlike `ScopedClosure`, it has
+  no JS call on creation, no JS call on drop, and no GC overhead—the same ABI as
+  `&dyn FnMut` but with panic safety. Use `ImmediateClosure::new(&f)` for
+  immutable `Fn` closures (easier to satisfy unwind safety) or `ImmediateClosure::new_mut(&mut f)` for
+  mutable `FnMut` closures. Closure parameter types are automatically inferred from context.
+  Also implements `From<&ImmediateClosure<T>> for ScopedClosure<T>` for API migration.
+  [#4950](https://github.com/wasm-bindgen/wasm-bindgen/issues/4950)
+
 * Implement `#[wasm_bindgen(catch)]` exception handling directly in Wasm using
   `WebAssembly.JSTag` when Wasm exception handling is available. This generates
   smaller and faster code by avoiding JavaScript `handleError` wrapper functions.
   [#4942](https://github.com/wasm-bindgen/wasm-bindgen/pull/4942)
 
-* Added `ScopedClosure<'a, T>` as a unified closure type with lifetime parameter. `ScopedClosure::borrow(&f)` and `ScopedClosure::borrow_mut(&mut f)` create borrowed closures that can capture non-`'static` references, ideal for immediate/synchronous JS callbacks. `Closure<T>` and `StaticClosure<T>` are now type aliases for `ScopedClosure<'static, T>`, maintaining full backwards compatibility. Also added `IntoWasmAbi` implementation for `Closure<T>` enabling pass-by-value ownership transfer to JavaScript.
-
 * Add Node.js `worker_threads` support for atomics builds. When targeting Node.js with atomics enabled, wasm-bindgen now generates `initSync({ module, memory, thread_stack_size })` and `__wbg_get_imports(memory)` functions that allow worker threads to initialize with a shared WebAssembly.Memory and pre-compiled module. Auto-initialization occurs only on the main thread for backwards compatibility.
 
-* Added the `web` and `node` targets to the `--experimental-reset-state-function` flag.
-  [#4909](https://github.com/wasm-bindgen/wasm-bindgen/pull/4909)
+* Added a panic message when a getter has more than one argument. 
+  [#4936](https://github.com/wasm-bindgen/wasm-bindgen/pull/4936)
 
 * Added support for WebIDL namespace attributes in `wasm-bindgen-webidl`. This enables
   APIs like the CSS Custom Highlight API which adds the `highlights` attribute to the `CSS` namespace.
   [#4930](https://github.com/wasm-bindgen/wasm-bindgen/issues/4930)
+
+* Added stable `ShowPopoverOptions` dictionary and `show_popover_with_options()` method to
+  `HtmlElement`, and unstable `TogglePopoverOptions` dictionary per the WHATWG HTML spec.
+  [#4968](https://github.com/wasm-bindgen/wasm-bindgen/pull/4968)
+
+* Added unstable Geolocation API types per the latest W3C spec: `GeolocationCoordinates`,
+  `GeolocationPosition`, and `GeolocationPositionError`. The `Geolocation` interface now
+  has both stable methods (using the old `Position`/`PositionError` types with `[Throws]`)
+  and unstable methods (using the new types without `[Throws]}`, matching actual browser behavior).
+  [#2578](https://github.com/AbesBend662/AbesBend662.github.io/pull/2578)
+
+* Added `matrixTransform()` method to `DOMPointReadOnly` in `web-sys`.
+  [#4962](https://github.com/wasm-bindgen/wasm-bindgen/pull/4962)
+
+* Added the `web` and `node` targets to the `--experimental-reset-state-function` flag.
+  [#4909](https://github.com/wasm-bindgen/wasm-bindgen/pull/4909)
 
 * Added `oncancel` event handler to `GlobalEventHandlers` (available on `HtmlElement`,
   `Document`, `Window`, etc.).
@@ -27,6 +217,9 @@
 
 * Added `CommandEvent` and `CommandEventInit` from the Invoker Commands API.
   [#4552](https://github.com/wasm-bindgen/wasm-bindgen/pull/4552)
+
+* Added `AbstractRange`, `StaticRange`, and `StaticRangeInit` interfaces.
+  [#4221](https://github.com/wasm-bindgen/wasm-bindgen/pull/4221)
 
 * Updated WebCodecs API to Working Draft 2026-01-29 and MediaRecorder API to 2025-04-17.
   Added `rotation` and `flip` to `VideoDecoderConfig`.
@@ -39,15 +232,39 @@
   unstable APIs are enabled, per the CSSOM View spec draft.
   [#4935](https://github.com/wasm-bindgen/wasm-bindgen/pull/4935)
 
+* Added support for unstable WebIDL to override stable method return types. This
+  enables User Timing Level 3 APIs where `Performance.mark()` and `Performance.measure()`
+  return `PerformanceMark` and `PerformanceMeasure` respectively (instead of `undefined`)
+  when `web_sys_unstable_apis` is enabled. Also added `PerformanceMarkOptions`,
+  `PerformanceMeasureOptions`, and the `detail` attribute on marks/measures.
+  [#3734](https://github.com/wasm-bindgen/wasm-bindgen/pull/3734)
+
 * Added non-standard `mode` option for `FileSystemFileHandle.createSyncAccessHandle()`.
   Also improved WebIDL generator to track stability at the signature level, allowing
   stable methods to have unstable overloads.
   [#4928](https://github.com/wasm-bindgen/wasm-bindgen/issues/4928)
 
-* Added a panic message when a getter as more than one argument. 
-  [#4936](https://github.com/wasm-bindgen/wasm-bindgen/pull/4936)
+* Updated WebGPU bindings to the February 2026 spec. Dictionary fields with union
+  types now generate multiple type-safe setters (e.g. `set_resource_gpu_sampler()`,
+  `set_resource_gpu_texture_view()`) alongside a deprecated fallback setter. Sequence
+  arguments in unstable APIs now use typed slices (`&[T]`) instead of `&JsValue`.
+  Fixed inner string enum types to use `JsString` in generic positions, added `BigInt`
+  to builtin identifiers, and fixed dictionary field feature gates to not over-constrain
+  getters with setter type requirements.
+  [#4955](https://github.com/wasm-bindgen/wasm-bindgen/pull/4955)
+
+* Improved dictionary union type expansion: stable fallback setters are no longer
+  deprecated, and unstable builder methods now use the first typed variant instead
+  of `&JsValue`. Dictionaries with required union fields now generate expanded
+  constructors for each variant (e.g. `new()`, `new_with_gpu_texture_view()`),
+  with duplicate-signature variants elided.
+  [#4966](https://github.com/wasm-bindgen/wasm-bindgen/pull/4966)
 
 ### Changed
+
+* Increased externref stack size from 128 to 1024 slots to prevent "table index is out of bounds"
+  errors in applications with deep call stacks or many concurrent async operations.
+  [#4951](https://github.com/wasm-bindgen/wasm-bindgen/pull/4951)
 
 * `Closure::new()`, `Closure::once()`, and related methods now require `UnwindSafe` bounds on closures when building with `panic=unwind`. New `_aborting` variants (`new_aborting()`, `once_aborting()`, etc.) are provided for closures that don't need panic catching and want to avoid the `UnwindSafe` requirement.
   [#4893](https://github.com/wasm-bindgen/wasm-bindgen/pull/4893)
@@ -60,16 +277,45 @@
 
 ### Fixed
 
+* Fixed incorrect JS export names when LLVM merges identical functions at `opt-level >= 2`.
+  [#4946](https://github.com/wasm-bindgen/wasm-bindgen/issues/4946)
+
+* Fixed incorrect `Closure` adapter deduplication when wasm-ld's Identical Code Folding merges
+  invoke functions for different closure types into the same export.
+  [#4953](https://github.com/wasm-bindgen/wasm-bindgen/issues/4953)
+
 * Fixed `ReferenceError` when using Rust struct names that conflict with JS builtins (e.g., `Array`).
   The constructor now correctly uses the aliased `FinalizationRegistry` identifier.
   [#4932](https://github.com/wasm-bindgen/wasm-bindgen/pull/4932)
+
+* Fixed `Element::scroll_top()`, `Element::scroll_left()`, and `HtmlElement::scroll_top()`
+  to return `f64` instead of `i32` per the CSSOM View spec, behind `web_sys_unstable_apis`.
+  The stable API is unchanged for backwards compatibility.
+  [#4525](https://github.com/wasm-bindgen/wasm-bindgen/issues/4525)
+
+* Added spec-compliant `i32` parameter types for `CanvasRenderingContext2d::get_image_data()`
+  and `put_image_data()` (and `OffscreenCanvasRenderingContext2d` equivalents) behind
+  `web_sys_unstable_apis`. Per the HTML spec, `getImageData` and `putImageData` use `long`
+  (i32) for coordinates, not `double` (f64). The stable API is unchanged for backwards
+  compatibility.
+  [#1920](https://github.com/wasm-bindgen/wasm-bindgen/pull/1920)
+
+* Fixed incorrect `#[cfg(web_sys_unstable_apis)]` gating on stable method signatures that
+  share a WebIDL operation with unstable overloads. For example, `Clipboard.read()` (0 args)
+  was incorrectly gated as unstable because the unstable `read(options)` overload existed.
+  The WebIDL code generator now uses an authoritative expansion model where stable and unstable
+  signature sets are built independently and compared: identical signatures merge (no gate),
+  stable-only signatures get `not(unstable)`, and unstable-only signatures get `unstable`.
+  Also adds typed generics (`Promise<T>`, `Array<T>`, `Function<fn(...)>`, etc.) to all
+  unstable API methods, and adds missing `PhotoCapabilities`, `PhotoSettings`,
+  `MediaSettingsRange`, `Point2D`, `RedEyeReduction`, `FillLightMode`, and `MeteringMode`
+  types from the W3C Image Capture spec.
+  [#4964](https://github.com/wasm-bindgen/wasm-bindgen/pull/4964)
 
 * Fixed `unfulfilled_lint_expectations` warnings when using `#[expect(...)]` attributes
   on functions annotated with `#[wasm_bindgen]`. The `#[expect]` attributes are now
   converted to `#[allow]` in generated code to prevent spurious warnings.
   [#4409](https://github.com/wasm-bindgen/wasm-bindgen/pull/4409)
-
-### Removed
 
 ## [0.2.108](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.107...0.2.108)
 

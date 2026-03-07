@@ -144,24 +144,36 @@ pub fn run(
     let id = client.new_session(&driver, capabilities)?;
     client.session = Some(id.clone());
 
-    // Visit our local server to open up the page that runs tests, and then get
-    // some handles to objects on the page which we'll be scraping output from.
+    let browser_name = client
+        .session_browser_name(&id)
+        .unwrap_or_else(|| driver.browser().to_ascii_lowercase());
+    let style_mode = style_mode_for_browser(&browser_name);
+
+    // Visit our local server to open up the page that runs tests.
     //
     // If WASM_BINDGEN_TEST_ADDRESS is set, use it as the local server URL,
     // trying to inherit the port from the server if it isn't specified.
-    let url = match std::env::var("WASM_BINDGEN_TEST_ADDRESS") {
+    let mut url = match std::env::var("WASM_BINDGEN_TEST_ADDRESS") {
         Ok(u) => {
             let mut url = Url::parse(&u)?;
             if url.port().is_none() {
                 url.set_port(Some(server.port())).unwrap();
             }
-            url.to_string()
+            url
         }
-        Err(_) => format!("http://{server}"),
+        Err(_) => Url::parse(&format!("http://{server}"))?,
     };
+    // The headless template reads this fragment to pick the style.
+    let style = match style_mode {
+        StyleMode::DisplayNone => "display-none",
+        StyleMode::VisibilityHidden => "visibility-hidden",
+    };
+    url.set_fragment(Some(&format!("wbg_style={style}")));
 
-    shell.status(&format!("Visiting {url}..."));
-    client.goto(&id, &url)?;
+    shell.status(&format!(
+        "Visiting {url} (browser: {browser_name}, sink: append, style: {style_mode:?}, poll: 100ms)..."
+    ));
+    client.goto(&id, url.as_str())?;
     shell.status("Loading page elements...");
 
     // At this point we need to wait for the test to finish before we can take a
@@ -180,27 +192,37 @@ pub fn run(
     shell.status("Waiting for test to finish...");
     let start = Instant::now();
     let max = Duration::new(test_timeout, 0);
+    let no_stream_scrape = env::var_os("WASM_BINDGEN_TEST_NO_STREAM").is_some();
     let mut shell_cleared = false;
     let mut output_buf = String::new();
     let mut output_offset = 0usize;
     while start.elapsed() < max {
-        let output = client.text_content(&id, "#output", output_offset)?;
-        let new_output = output.chunk;
-        output_offset = output.next_offset;
-
-        // Print new output as it appears (real-time streaming)
-        if !new_output.is_empty() {
-            // Clear shell status before first output so they don't mix
-            if !shell_cleared {
-                shell.clear();
-                shell_cleared = true;
+        if no_stream_scrape {
+            let output = client.text_content(&id, "#output", 0)?;
+            if output.chunk.contains("test result: ") {
+                output_buf = output.chunk;
+                output_offset = output.next_offset;
+                break;
             }
-            io::stdout().lock().write_all(new_output.as_bytes())?;
-            output_buf.push_str(&new_output);
-        }
+        } else {
+            let output = client.text_content(&id, "#output", output_offset)?;
+            let new_output = output.chunk;
+            output_offset = output.next_offset;
 
-        if output_buf.contains("test result: ") {
-            break;
+            // Print new output as it appears (real-time streaming)
+            if !new_output.is_empty() {
+                // Clear shell status before first output so they don't mix
+                if !shell_cleared {
+                    shell.clear();
+                    shell_cleared = true;
+                }
+                io::stdout().lock().write_all(new_output.as_bytes())?;
+                output_buf.push_str(&new_output);
+            }
+
+            if output_buf.contains("test result: ") {
+                break;
+            }
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -209,7 +231,11 @@ pub fn run(
     }
 
     // Tests have now finished or have timed out. At this point we need to check
-    // what happened. Output was already streamed in real-time above.
+    // what happened. In streaming mode output was already printed in real-time.
+    // In no-stream mode, emit the buffered output now.
+    if no_stream_scrape && !output_buf.is_empty() {
+        io::stdout().lock().write_all(output_buf.as_bytes())?;
+    }
 
     // Print any remaining output that might have arrived after the last poll
     let remaining_output = {
@@ -231,27 +257,42 @@ pub fn run(
     }
 
     if !output_buf.contains("test result: ok") {
-        // Read console output incrementally to avoid exceeding WebDriver response limits
-        let mut has_console = false;
-        let mut console_offset = 0usize;
+        // Read console output incrementally to avoid exceeding WebDriver response limits.
+        let mut has_output = false;
+        let mut offset = 0;
         loop {
-            let output = client.text_content(&id, "#console_output", console_offset)?;
+            let output = client.text_content(&id, "#console_output", offset)?;
             let chunk = output.chunk;
             if chunk.is_empty() {
                 break;
             }
-            if !has_console {
+            if !has_output {
                 println!("console output:");
-                has_console = true;
+                has_output = true;
             }
             io::stdout().lock().write_all(tab(&chunk).as_bytes())?;
-            console_offset = output.next_offset;
+            offset = output.next_offset;
         }
 
         bail!("some tests failed")
     }
 
     Ok(())
+}
+
+#[derive(Copy, Clone, Debug)]
+enum StyleMode {
+    DisplayNone,
+    VisibilityHidden,
+}
+
+fn style_mode_for_browser(browser_name: &str) -> StyleMode {
+    let browser = browser_name.to_ascii_lowercase();
+    if browser.contains("safari") {
+        StyleMode::VisibilityHidden
+    } else {
+        StyleMode::DisplayNone
+    }
 }
 
 enum Driver {
@@ -387,6 +428,7 @@ struct Client {
 
 enum Method<'a> {
     Post(&'a str),
+    Get,
     Delete,
 }
 
@@ -590,6 +632,39 @@ impl Client {
         }
     }
 
+    fn session_browser_name(&mut self, id: &str) -> Option<String> {
+        let value: serde_json::Value = match self.get(&format!("/session/{id}")) {
+            Ok(value) => value,
+            Err(err) => {
+                debug!("failed to read webdriver session capabilities: {err:#}");
+                return None;
+            }
+        };
+        value
+            .get("value")
+            .and_then(|v| {
+                v.get("capabilities")
+                    .and_then(|caps| caps.get("browserName"))
+                    .or_else(|| v.get("browserName"))
+            })
+            .or_else(|| {
+                value
+                    .get("capabilities")
+                    .and_then(|caps| caps.get("browserName"))
+            })
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    fn get<U>(&mut self, path: &str) -> Result<U, Error>
+    where
+        U: for<'a> Deserialize<'a>,
+    {
+        debug!("GET {path}");
+        let result = self.doit(path, Method::Get)?;
+        Ok(serde_json::from_str(&result)?)
+    }
+
     fn post<T, U>(&mut self, path: &str, data: &T) -> Result<U, Error>
     where
         T: Serialize,
@@ -618,6 +693,7 @@ impl Client {
                 .post(url.as_str())
                 .content_type("application/json")
                 .send(data.as_bytes())?,
+            Method::Get => self.agent.get(url.as_str()).call()?,
             Method::Delete => self.agent.delete(url.as_str()).call()?,
         };
 
@@ -644,6 +720,11 @@ impl Drop for Client {
     }
 }
 
+struct TextChunk {
+    chunk: String,
+    next_offset: usize,
+}
+
 fn tab(s: &str) -> String {
     let mut result = String::new();
     for line in s.lines() {
@@ -652,11 +733,6 @@ fn tab(s: &str) -> String {
         result.push('\n');
     }
     result
-}
-
-struct TextChunk {
-    chunk: String,
-    next_offset: usize,
 }
 
 struct BackgroundChild<'a> {

@@ -11,7 +11,7 @@ use crate::wit::{
     Adapter, AdapterId, AdapterKind, AdapterType, AuxFunctionArgumentData, ClosureDtor, Instruction,
 };
 use anyhow::{bail, Error};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use walrus::{Module, ValType};
 
@@ -93,6 +93,27 @@ pub struct JsFunction {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TsReference {
     StringEnum(String),
+}
+
+pub fn wrap_try_catch(call: &str) -> String {
+    format!(
+        "\
+        __wbg_termination_guard();
+        try {{
+            {call};
+        }} catch(e) {{
+            __wbg_handle_catch(e);
+        }}
+        "
+    )
+}
+
+pub fn maybe_wrap_try_catch(call: &str, should_check_aborted: bool) -> String {
+    if should_check_aborted {
+        wrap_try_catch(call)
+    } else {
+        format!("{call};")
+    }
 }
 
 impl<'a, 'b> Builder<'a, 'b> {
@@ -189,6 +210,7 @@ impl<'a, 'b> Builder<'a, 'b> {
                 None => AuxFunctionArgumentData {
                     name: format!("arg{i}"),
                     ty_override: None,
+                    optional: false,
                     desc: None,
                 },
             };
@@ -356,7 +378,10 @@ impl<'a, 'b> Builder<'a, 'b> {
         let mut ts_refs = HashSet::new();
         for (
             AuxFunctionArgumentData {
-                name, ty_override, ..
+                name,
+                ty_override,
+                optional,
+                ..
             },
             ty,
         ) in args_data.iter().zip(arg_tys).rev()
@@ -370,6 +395,9 @@ impl<'a, 'b> Builder<'a, 'b> {
             let mut ts = String::new();
             if let Some(v) = ty_override {
                 omittable = false;
+                if *optional {
+                    arg.push('?');
+                }
                 arg.push_str(": ");
                 ts.push_str(v);
             } else {
@@ -377,11 +405,23 @@ impl<'a, 'b> Builder<'a, 'b> {
                     AdapterType::Option(ty) if omittable => {
                         // e.g. `foo?: string | null`
                         arg.push_str("?: ");
-                        adapter2ts(ty, TypePosition::Argument, &mut ts, Some(&mut ts_refs));
+                        adapter2ts(
+                            ty,
+                            TypePosition::Argument,
+                            &mut ts,
+                            Some(&mut ts_refs),
+                            &self.cx.qualified_to_js_name,
+                        );
                         ts.push_str(" | null");
                     }
                     ty => {
-                        adapter2ts(ty, TypePosition::Argument, &mut ts, Some(&mut ts_refs));
+                        adapter2ts(
+                            ty,
+                            TypePosition::Argument,
+                            &mut ts,
+                            Some(&mut ts_refs),
+                            &self.cx.qualified_to_js_name,
+                        );
                         omittable = false;
                         arg.push_str(": ");
                     }
@@ -428,6 +468,7 @@ impl<'a, 'b> Builder<'a, 'b> {
                         TypePosition::Return,
                         &mut ret,
                         Some(&mut ts_refs),
+                        &self.cx.qualified_to_js_name,
                     ),
                     _ => ret.push_str("[any]"),
                 }
@@ -464,6 +505,7 @@ impl<'a, 'b> Builder<'a, 'b> {
             AuxFunctionArgumentData {
                 name,
                 ty_override,
+                optional,
                 desc,
             },
             ty,
@@ -475,11 +517,24 @@ impl<'a, 'b> Builder<'a, 'b> {
                 omittable = false;
                 arg.push_str(v);
                 arg.push_str("} ");
-                arg.push_str(name);
+                if *optional {
+                    // Use [name] syntax for optional parameters
+                    arg.push('[');
+                    arg.push_str(name);
+                    arg.push(']');
+                } else {
+                    arg.push_str(name);
+                }
             } else {
                 match ty {
                     AdapterType::Option(ty) if omittable => {
-                        adapter2ts(ty, TypePosition::Argument, &mut arg, None);
+                        adapter2ts(
+                            ty,
+                            TypePosition::Argument,
+                            &mut arg,
+                            None,
+                            &self.cx.qualified_to_js_name,
+                        );
                         arg.push_str(" | null} ");
                         arg.push('[');
                         arg.push_str(name);
@@ -487,7 +542,13 @@ impl<'a, 'b> Builder<'a, 'b> {
                     }
                     _ => {
                         omittable = false;
-                        adapter2ts(ty, TypePosition::Argument, &mut arg, None);
+                        adapter2ts(
+                            ty,
+                            TypePosition::Argument,
+                            &mut arg,
+                            None,
+                            &self.cx.qualified_to_js_name,
+                        );
                         arg.push_str("} ");
                         arg.push_str(name);
                     }
@@ -508,6 +569,7 @@ impl<'a, 'b> Builder<'a, 'b> {
             Some(AuxFunctionArgumentData {
                 name,
                 ty_override,
+                optional: _,
                 desc,
             }),
             Some(ty),
@@ -517,7 +579,13 @@ impl<'a, 'b> Builder<'a, 'b> {
             if let Some(v) = ty_override {
                 ret.push_str(v);
             } else {
-                adapter2ts(ty, TypePosition::Argument, &mut ret, None);
+                adapter2ts(
+                    ty,
+                    TypePosition::Argument,
+                    &mut ret,
+                    None,
+                    &self.cx.qualified_to_js_name,
+                );
             }
             ret.push_str("} ");
             ret.push_str(name);
@@ -628,7 +696,8 @@ impl<'a, 'b> JsBuilder<'a, 'b> {
 
     fn assert_class(&mut self, arg: &str, class: &str) {
         self.cx.expose_assert_class();
-        self.prelude(&format!("_assertClass({arg}, {class});"));
+        let identifier = self.cx.require_class_identifier(class);
+        self.prelude(&format!("_assertClass({arg}, {identifier});"));
     }
 
     fn assert_number(&mut self, arg: &str) {
@@ -792,6 +861,11 @@ fn instruction(
         Instruction::CallExport(_)
         | Instruction::CallAdapter(_)
         | Instruction::DeferFree { .. } => {
+            let mut should_check_aborted = js.cx.aux.wrapped_js_tag.is_some()
+                && matches!(
+                    instr,
+                    Instruction::CallExport(_) | Instruction::DeferFree { .. }
+                );
             let invoc = Invocation::from(instr, js.cx.module);
             let (mut params, results) = invoc.params_results(js.cx);
 
@@ -824,19 +898,35 @@ fn instruction(
             }
 
             // Call the function through an export of the underlying module.
-            let call = invoc.invoke(js.cx, &args, &mut js.prelude, log_error)?;
+            let call = invoc.invoke(
+                js.cx,
+                &args,
+                &mut js.prelude,
+                log_error,
+                &mut should_check_aborted,
+            )?;
 
             // And then figure out how to actually handle where the call
             // happens. This is pretty conditional depending on the number of
             // return values of the function.
             match (invoc.defer(), results) {
                 (true, 0) => {
-                    js.finally(&format!("{call};"));
+                    js.finally(&maybe_wrap_try_catch(&call, should_check_aborted));
                 }
                 (true, _) => panic!("deferred calls must have no results"),
-                (false, 0) => js.prelude(&format!("{call};")),
+                (false, 0) => js.prelude(&maybe_wrap_try_catch(&call, should_check_aborted)),
                 (false, n) => {
-                    js.prelude(&format!("const ret = {call};"));
+                    let body = if should_check_aborted {
+                        format!(
+                            "\
+                            let ret;
+                            {}",
+                            &wrap_try_catch(&format!("ret = {call};"))
+                        )
+                    } else {
+                        format!("const ret = {call};")
+                    };
+                    js.prelude(&body);
                     if n == 1 {
                         js.push("ret".to_string());
                     } else {
@@ -1321,8 +1411,12 @@ fn instruction(
 
         Instruction::RustFromI32 { class } => {
             let val = js.pop();
+            // Resolve both the descriptor class and the constructor class to
+            // rust_name for comparison, since they may use different naming
+            // (qualified_name vs js_class vs rust_name).
+            let resolved_class = js.cx.resolve_class_name(class);
             match constructor {
-                Some(name) if name == class => {
+                Some(name) if js.cx.resolve_class_name(name) == resolved_class => {
                     // Get the JS identifier for the class, which may be aliased
                     // if the name conflicts with a JS builtin (e.g., `Array` -> `Array2`)
                     let identifier = js.cx.require_class_identifier(class);
@@ -1410,7 +1504,7 @@ fn instruction(
             // TODO: further merge the heap and stack closure handling as
             // they're almost identical (by nature) except for ownership
             // integration.
-            if let ClosureDtor::OwnClosure(dtor_export) = dtor {
+            if let ClosureDtor::OwnClosure = dtor {
                 // Persistent/owned closure with destructor
                 let make_closure = if *mutable {
                     js.cx.expose_make_mut_closure();
@@ -1420,9 +1514,7 @@ fn instruction(
                     "makeClosure"
                 };
 
-                let dtor = &js.cx.module.exports.get(*dtor_export).name;
-
-                js.push(format!("{make_closure}({a}, {b}, wasm.{dtor}, {wrapper})"));
+                js.push(format!("{make_closure}({a}, {b}, {wrapper})"));
             } else {
                 // Borrowed closure without destructor
                 let i = js.tmp();
@@ -1453,23 +1545,21 @@ fn instruction(
                 }
 
                 match dtor {
-                    ClosureDtor::OwnClosure(_) => unreachable!(),
-                    ClosureDtor::RefLegacy => {
-                        // Wrapper for a raw FnMut or Fn closure used as an
-                        // argument to a JS function. Make sure to null out our
+                    ClosureDtor::OwnClosure => unreachable!(),
+                    ClosureDtor::Immediate => {
+                        // Wrapper for ImmediateClosure or raw &dyn FnMut/&dyn Fn closure
+                        // used as an argument to a JS function. Make sure to null out our
                         // internal pointers when we return back to Rust to
                         // ensure that any lingering references to the closure
                         // will fail immediately due to null pointers passed in
                         // to Rust.
-                        js.finally(&format!("state{i}.a = state{i}.b = 0;"));
+                        js.finally(&format!("state{i}.a = 0;"));
                     }
                     ClosureDtor::Borrowed => {
                         // Borrowed closure from ScopedClosure::borrow/borrow_mut. Add
                         // _wbg_cb_unref to invalidate the closure at the end of
                         // the scoped block.
-                        js.prelude(&format!(
-                            "cb{i}._wbg_cb_unref = () => {{ state{i}.a = state{i}.b = 0; }};",
-                        ));
+                        js.prelude(&format!("cb{i}._wbg_cb_unref = () => state{i}.a = 0;"));
                     }
                 }
                 js.push(format!("cb{i}"));
@@ -1599,7 +1689,11 @@ fn instruction(
 }
 
 enum Invocation {
-    Core { id: walrus::FunctionId, defer: bool },
+    Core {
+        id: walrus::FunctionId,
+        export_id: Option<walrus::ExportId>,
+        defer: bool,
+    },
     Adapter(AdapterId),
 }
 
@@ -1609,11 +1703,16 @@ impl Invocation {
         match instr {
             DeferFree { free, .. } => Invocation::Core {
                 id: *free,
+                export_id: None,
                 defer: true,
             },
 
             CallExport(e) => match module.exports.get(*e).item {
-                walrus::ExportItem::Function(id) => Invocation::Core { id, defer: false },
+                walrus::ExportItem::Function(id) => Invocation::Core {
+                    id,
+                    export_id: Some(*e),
+                    defer: false,
+                },
                 _ => panic!("can only call exported function"),
             },
 
@@ -1644,10 +1743,14 @@ impl Invocation {
         args: &[String],
         prelude: &mut String,
         log_error: &mut bool,
+        handle_error: &mut bool,
     ) -> Result<String, Error> {
         match self {
-            Invocation::Core { id, .. } => {
-                let name = cx.export_name_of(*id);
+            Invocation::Core { id, export_id, .. } => {
+                let name = match export_id {
+                    Some(eid) => cx.module.exports.get(*eid).name.clone(),
+                    None => cx.export_name_of(*id),
+                };
                 Ok(format!("wasm.{name}({})", args.join(", ")))
             }
             Invocation::Adapter(id) => {
@@ -1662,6 +1765,9 @@ impl Invocation {
                 let variadic = cx.aux.imports_with_variadic.contains(id);
                 if cx.import_never_log_error(import) {
                     *log_error = false;
+                }
+                if cx.import_never_handle_error(import) {
+                    *handle_error = false;
                 }
                 cx.invoke_import(import, kind, args, variadic, prelude)
             }
@@ -1687,6 +1793,7 @@ fn adapter2ts(
     position: TypePosition,
     dst: &mut String,
     refs: Option<&mut HashSet<TsReference>>,
+    name_map: &HashMap<String, String>,
 ) {
     match ty {
         AdapterType::I32
@@ -1709,14 +1816,17 @@ fn adapter2ts(
         AdapterType::Bool => dst.push_str("boolean"),
         AdapterType::Vector(kind) => dst.push_str(&kind.js_ty()),
         AdapterType::Option(ty) => {
-            adapter2ts(ty, position, dst, refs);
+            adapter2ts(ty, position, dst, refs, name_map);
             dst.push_str(match position {
                 TypePosition::Argument => " | null | undefined",
                 TypePosition::Return => " | undefined",
             });
         }
         AdapterType::NamedExternref(name) => dst.push_str(name),
-        AdapterType::Struct(name) => dst.push_str(name),
+        AdapterType::Struct(name) => {
+            let resolved = name_map.get(name).map(|s| s.as_str()).unwrap_or(name);
+            dst.push_str(resolved);
+        }
         AdapterType::Enum(name) => dst.push_str(name),
         AdapterType::StringEnum(name) => {
             if let Some(refs) = refs {

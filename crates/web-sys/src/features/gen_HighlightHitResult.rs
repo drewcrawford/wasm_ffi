@@ -35,23 +35,25 @@ extern "C" {
     #[wasm_bindgen(method, setter = "highlight")]
     pub fn set_highlight(this: &HighlightHitResult, val: &Highlight);
     #[cfg(web_sys_unstable_apis)]
+    #[cfg(feature = "AbstractRange")]
     #[doc = "Get the `ranges` field of this object."]
     #[doc = ""]
-    #[doc = "*This API requires the following crate features to be activated: `HighlightHitResult`*"]
+    #[doc = "*This API requires the following crate features to be activated: `AbstractRange`, `HighlightHitResult`*"]
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
     #[wasm_bindgen(method, getter = "ranges")]
-    pub fn get_ranges(this: &HighlightHitResult) -> Option<::js_sys::Array>;
+    pub fn get_ranges(this: &HighlightHitResult) -> Option<::js_sys::Array<AbstractRange>>;
     #[cfg(web_sys_unstable_apis)]
+    #[cfg(feature = "AbstractRange")]
     #[doc = "Change the `ranges` field of this object."]
     #[doc = ""]
-    #[doc = "*This API requires the following crate features to be activated: `HighlightHitResult`*"]
+    #[doc = "*This API requires the following crate features to be activated: `AbstractRange`, `HighlightHitResult`*"]
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
     #[wasm_bindgen(method, setter = "ranges")]
-    pub fn set_ranges(this: &HighlightHitResult, val: &::wasm_bindgen::JsValue);
+    pub fn set_ranges(this: &HighlightHitResult, val: &[AbstractRange]);
 }
 #[cfg(web_sys_unstable_apis)]
 impl HighlightHitResult {
@@ -74,8 +76,9 @@ impl HighlightHitResult {
         self
     }
     #[cfg(web_sys_unstable_apis)]
+    #[cfg(feature = "AbstractRange")]
     #[deprecated = "Use `set_ranges()` instead."]
-    pub fn ranges(&mut self, val: &::wasm_bindgen::JsValue) -> &mut Self {
+    pub fn ranges(&mut self, val: &[AbstractRange]) -> &mut Self {
         self.set_ranges(val);
         self
     }
