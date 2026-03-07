@@ -33,7 +33,7 @@ This enables spawning worker threads that share memory with the main thread.
 
 See `examples/nodejs-threads` for a complete example.
 
-# macOS-fix
+# macOS-fix (UPSTREAMED)
 
 Fixed a macOS-specific build failure in `tests/no_interpret.rs` by making the link section platform-aware. Supporting both macOS (`__DATA,__mod_init_func`) and other platforms (`.init_array`).
 
@@ -41,7 +41,7 @@ Fixed a macOS-specific build failure in `tests/no_interpret.rs` by making the li
 
 Improve panic capture from worker threads in browser tests. Panics from dedicated workers and shared workers are now properly captured and reported.
 
-# tty-detection
+# tty-detection (UPSTREAMED)
 
 Shell status messages (e.g., "Loading page elements...") are now suppressed when stdout is not a TTY. This produces cleaner output in CI environments and when piping output.
 
@@ -57,19 +57,19 @@ Remove codecov and codspeed CI workflows
 Re-bless with latest nightly
 Add bench_wasm CI job for running WASM benchmarks
 
-# realtime-headless-output
+# realtime-headless-output (UPSTREAMED)
 
 Add realtime output to headless browser mode.
 
 PR: https://github.com/wasm-bindgen/wasm-bindgen/pull/4845
 
-# add-headless_output-benchmark
+# add-headless_output-benchmark (UPSTREAMED)
 
 Add a logging benchmark to headless browser mode.
 
 WASM_BINDGEN_TEST_TIMEOUT=500 cargo bench --target=wasm32-unknown-unknown
 
-# improve-logging-performance-in
+# improve-logging-performance-in (UPSTREAMED)
 
 Improve logging performance by orders of magnitude
 
