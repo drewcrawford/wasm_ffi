@@ -7,25 +7,33 @@
     <pre id="output" style="visibility:hidden">Loading scripts...</pre>
     <pre id="console_output" style="visibility:hidden"></pre>
     <script>
+     const hashParams = new URLSearchParams(location.hash.replace(/^#/, ""));
+     const styleMode = hashParams.get("wbg_style") === "display-none"
+         ? "display:none"
+         : "visibility:hidden";
+     for (const id of ["output", "console_output"]) {
+         document.getElementById(id).setAttribute("style", styleMode);
+     }
+
      const appendTo = id => (...args) => {
-         const el = document.getElementById(id);
+         const logs = document.getElementById(id);
          for (const msg of args) {
-             el.appendChild(document.createTextNode(`${msg}\n`));
+             logs.appendChild(document.createTextNode(String(msg) + "\n"));
          }
      };
 
      // {NOCAPTURE}
      const wrap = method => {
-         const on_method = `on_console_${method}`;
-         console[method] = function (...args) {
-             if (nocapture) {
-                 appendTo("output").apply(this, args);
-             } else {
-                 appendTo("console_output").apply(this, args);
-             }
-             if (window[on_method]) {
-                 window[on_method](args);
-             }
+             const on_method = `on_console_${method}`;
+             console[method] = function (...args) {
+                 if (nocapture) {
+                     appendTo("output").apply(this, args);
+                 } else {
+                     appendTo("console_output").apply(this, args);
+                 }
+                 if (window[on_method]) {
+                     window[on_method](args);
+                 }
          };
      };
 

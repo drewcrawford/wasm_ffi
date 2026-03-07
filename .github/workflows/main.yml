@@ -235,7 +235,7 @@ jobs:
         targets: wasm32-unknown-unknown
     - uses: actions/setup-node@v6
       with:
-        node-version: '20'
+        node-version: '22'
     - uses: denoland/setup-deno@v2
       with:
         deno-version: v2.x
@@ -285,12 +285,20 @@ jobs:
             run: cargo test --manifest-path crates/web-sys/Cargo.toml --target wasm32-unknown-unknown --all-features
             env:
               RUSTFLAGS: --cfg=web_sys_unstable_apis
+          - name: "web-sys (next-unstable, all features)"
+            run: cargo test --manifest-path crates/web-sys/Cargo.toml --target wasm32-unknown-unknown --all-features
+            env:
+              RUSTFLAGS: --cfg=web_sys_unstable_apis --cfg=wbg_next_unstable
           - name: "js-sys"
             run: cargo test -p js-sys --features=unsafe-eval --target wasm32-unknown-unknown
           - name: "js-sys (unstable)"
             run: cargo test -p js-sys --features=unsafe-eval --target wasm32-unknown-unknown
             env:
               RUSTFLAGS: --cfg=js_sys_unstable_apis
+          - name: "js-sys (next-unstable)"
+            run: cargo test -p js-sys --features=unsafe-eval --target wasm32-unknown-unknown
+            env:
+              RUSTFLAGS: --cfg=js_sys_unstable_apis --cfg=wbg_next_unstable
           - name: "wasm-bindgen-webidl"
             run: cargo test -p wasm-bindgen-webidl
           - name: "webidl-tests"
@@ -301,12 +309,18 @@ jobs:
             run: cargo test -p webidl-tests --target wasm32-unknown-unknown
             env:
               RUSTFLAGS: --cfg=web_sys_unstable_apis
+          - name: "webidl-tests (next)"
+            run: cargo test -p webidl-tests --target wasm32-unknown-unknown
+            env:
+              RUSTFLAGS: --cfg=web_sys_unstable_apis --cfg=wbg_next_unstable
+              WBG_NEXT_UNSTABLE: "1"
           - name: "typescript-tests"
             run: cd crates/typescript-tests && ./run.sh
     name: "Run ${{ matrix.runs.name }} tests (with geckodriver)"
     env:
       RUSTFLAGS: ${{ matrix.runs.env.RUSTFLAGS }}
       WBINDGEN_I_PROMISE_JS_SYNTAX_WORKS_IN_NODE: ${{ matrix.runs.env.WBINDGEN_I_PROMISE_JS_SYNTAX_WORKS_IN_NODE }}
+      WBG_NEXT_UNSTABLE: ${{ matrix.runs.env.WBG_NEXT_UNSTABLE }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -360,7 +374,7 @@ jobs:
       working-directory: examples
     - run: pnpm run -r build
       working-directory: examples
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: examples
         path: examples/dist
@@ -371,7 +385,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         name: examples
         path: examples/dist
@@ -399,7 +413,7 @@ jobs:
         targets: wasm32-unknown-unknown
     - run: cargo build --manifest-path benchmarks/Cargo.toml --release --target wasm32-unknown-unknown
     - run: cargo run -p wasm-bindgen-cli -- target/wasm32-unknown-unknown/release/wasm_bindgen_benchmark.wasm --out-dir benchmarks/pkg --target web
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: benchmarks
         path: benchmarks
@@ -418,7 +432,7 @@ jobs:
         strip -g target/x86_64-unknown-linux-musl/release/wasm-bindgen
         strip -g target/x86_64-unknown-linux-musl/release/wasm-bindgen-test-runner
         strip -g target/x86_64-unknown-linux-musl/release/wasm2es6js
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: dist_linux_x86_64_musl
         path: "target/x86_64-unknown-linux-musl/release/wasm*"
@@ -436,7 +450,7 @@ jobs:
         cargo build --manifest-path crates/cli/Cargo.toml --target aarch64-unknown-linux-gnu --features vendored-openssl --release
       env:
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: dist_linux_aarch64_gnu
         path: "target/aarch64-unknown-linux-gnu/release/wasm*"
@@ -452,7 +466,7 @@ jobs:
     - run: sudo apt update -y && sudo apt install musl-tools -y
     - run: |
         cargo build --manifest-path crates/cli/Cargo.toml --target aarch64-unknown-linux-musl --features vendored-openssl --release
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: dist_linux_aarch64_musl
         path: "target/aarch64-unknown-linux-musl/release/wasm*"
@@ -468,7 +482,7 @@ jobs:
     - run: cargo build --manifest-path crates/cli/Cargo.toml --target x86_64-apple-darwin --release
       env:
         MACOSX_DEPLOYMENT_TARGET: 10.7
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: dist_macos_x86_64
         path: "target/x86_64-apple-darwin/release/wasm*"
@@ -483,7 +497,7 @@ jobs:
         cargo build --manifest-path crates/cli/Cargo.toml --release
       env:
         MACOSX_DEPLOYMENT_TARGET: 10.7
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: dist_macos_aarch64
         path: "target/release/wasm*"
@@ -497,7 +511,7 @@ jobs:
     - run: cargo build --manifest-path crates/cli/Cargo.toml --release
       env:
         RUSTFLAGS: -Ctarget-feature=+crt-static
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: dist_windows
         path: "target/release/wasm*"
@@ -508,10 +522,10 @@ jobs:
     steps:
     - uses: actions/checkout@v6
     - run: |
-        curl -L https://github.com/rust-lang/mdBook/releases/download/v0.4.28/mdbook-v0.4.28-x86_64-unknown-linux-gnu.tar.gz | tar xzf -
+        curl -L https://github.com/rust-lang/mdBook/releases/download/v0.5.2/mdbook-v0.5.2-x86_64-unknown-linux-gnu.tar.gz | tar xzf -
         echo $PWD >> $GITHUB_PATH
     - run: (cd guide && mdbook build)
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: doc_book
         path: guide/book/html
@@ -531,7 +545,7 @@ jobs:
       env:
         RUSTDOCFLAGS: --cfg=docsrs
     - run: tar czvf docs.tar.gz target/doc
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: doc_api
         path: docs.tar.gz
@@ -621,7 +635,7 @@ jobs:
     - uses: actions/checkout@v6
       with:
         fetch-depth: 0
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         path: artifacts
     - run: find artifacts
@@ -651,7 +665,7 @@ jobs:
         mk x86_64-apple-darwin dist_macos_x86_64
         mk aarch64-apple-darwin dist_macos_aarch64
         mk x86_64-pc-windows-msvc dist_windows
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: gh-release
         path: gh-release
@@ -662,7 +676,7 @@ jobs:
         mv artifacts/examples gh-pages/exbuild
         mv artifacts/benchmarks gh-pages/benchmarks
         tar czf gh-pages.tar.gz gh-pages
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@v7
       with:
         name: gh-pages
         path: gh-pages.tar.gz

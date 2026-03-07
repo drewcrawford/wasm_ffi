@@ -34,6 +34,7 @@ pub(crate) static BUILTIN_IDENTS: Lazy<BTreeSet<&'static str>> = Lazy::new(|| {
         "DataView",
         "Iterator",
         "AsyncIterator",
+        "Date",
         "Int8Array",
         "Uint8Array",
         "Uint8ClampedArray",
@@ -43,6 +44,18 @@ pub(crate) static BUILTIN_IDENTS: Lazy<BTreeSet<&'static str>> = Lazy::new(|| {
         "Uint32Array",
         "Float32Array",
         "Float64Array",
+        // Generic js-sys types
+        "JsString",
+        "JsOption",
+        "ArrayTuple",
+        "Symbol",
+        "BigInt",
+        "JsError",
+        "Boolean",
+        "Number",
+        // wasm-bindgen built-in types
+        "Undefined",
+        "Null",
     ])
 });
 

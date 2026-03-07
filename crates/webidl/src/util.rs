@@ -2,7 +2,6 @@ use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
-use std::ptr;
 
 use heck::{ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Ident, TokenStream};
@@ -22,7 +21,7 @@ use crate::constants::{
 };
 use crate::first_pass::{FirstPassRecord, OperationData, OperationId, Signature};
 use crate::generator::{ConstValue, InterfaceMethod, InterfaceMethodKind};
-use crate::idl_type::{IdentifierType, IdlType, ToIdlType};
+use crate::wbg_type::{IdentifierType, ToWbgType, WbgType};
 use crate::Options;
 use syn::parse_quote;
 
@@ -116,14 +115,13 @@ pub fn mdn_doc(class: &str, method: Option<&str>) -> String {
 
 // Array type is borrowed for arguments (`&mut [T]` or `&[T]`) and owned for return value (`Vec<T>`).
 pub(crate) fn array(base_ty: &str, pos: TypePosition, immutable: bool) -> syn::Type {
-    match pos {
-        TypePosition::Argument => {
-            shared_ref(
-                slice_ty(ident_ty(raw_ident(base_ty))),
-                /*mutable =*/ !immutable,
-            )
-        }
-        TypePosition::Return => vec_ty(ident_ty(raw_ident(base_ty))),
+    if pos.is_argument() && !pos.inner {
+        shared_ref(
+            slice_ty(ident_ty(raw_ident(base_ty))),
+            /*mutable =*/ !immutable,
+        )
+    } else {
+        vec_ty(ident_ty(raw_ident(base_ty)))
     }
 }
 
@@ -217,11 +215,124 @@ pub(crate) fn option_ty(t: syn::Type) -> syn::Type {
     ty.into()
 }
 
-/// Possible positions for a type in a function signature.
+/// From `T` create `::js_sys::JsOption<T>`
+///
+/// Used for nullable types nested inside generic containers (e.g., `Promise<JsOption<Foo>>`).
+/// Unlike `Option<T>` which is a Rust ABI, `JsOption<T>` is a valid erasable generic type.
+pub(crate) fn js_option_ty(t: syn::Type) -> syn::Type {
+    let arguments = syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+        colon2_token: None,
+        lt_token: Default::default(),
+        args: FromIterator::from_iter(vec![syn::GenericArgument::Type(t)]),
+        gt_token: Default::default(),
+    });
+
+    let ident = raw_ident("JsOption");
+    let seg = syn::PathSegment { ident, arguments };
+    let path = syn::Path {
+        leading_colon: Some(Default::default()),
+        segments: FromIterator::from_iter(vec![syn::PathSegment::from(raw_ident("js_sys")), seg]),
+    };
+    let ty = syn::TypePath { qself: None, path };
+    ty.into()
+}
+
+/// Check if a type is `::wasm_bindgen::JsValue`
+pub(crate) fn is_js_value(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(type_path) = ty {
+        let segments: Vec<_> = type_path.path.segments.iter().collect();
+        if segments.len() == 2 {
+            return segments[0].ident == "wasm_bindgen" && segments[1].ident == "JsValue";
+        }
+    }
+    false
+}
+
+/// From `base_path` and `T` create `base_path<T>`, unless T is JsValue (then just return base)
+/// For example: `js_sys::Array` + `i32` → `js_sys::Array<i32>`
+/// But: `js_sys::Promise` + `JsValue` → `js_sys::Promise`
+pub(crate) fn generic_ty(base: syn::Type, type_arg: syn::Type) -> syn::Type {
+    // If inner type is JsValue, omit the generic (JsValue is the default)
+    if is_js_value(&type_arg) {
+        return base;
+    }
+
+    // Extract the path from the base type
+    let mut path = match base {
+        syn::Type::Path(type_path) => type_path.path,
+        _ => panic!("Expected TypePath for generic base, got {base:?}"),
+    };
+
+    // Add generic argument to the last segment
+    if let Some(last_seg) = path.segments.last_mut() {
+        last_seg.arguments =
+            syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                colon2_token: None,
+                lt_token: Default::default(),
+                args: FromIterator::from_iter(vec![syn::GenericArgument::Type(type_arg)]),
+                gt_token: Default::default(),
+            });
+    }
+
+    syn::Type::Path(syn::TypePath { qself: None, path })
+}
+
+/// Direction of data flow across the JS/Wasm boundary.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum TypePosition {
+pub enum Direction {
+    /// Data flowing from Rust to JS (function arguments, callback returns)
     Argument,
+    /// Data flowing from JS to Rust (function returns, callback arguments)
     Return,
+}
+
+/// Position of a type in a function signature.
+///
+/// This models where a type appears, which affects how it's converted to Rust:
+/// - Top-level positions (`inner: false`) can use Rust-native types (`String`, `Option<T>`)
+/// - Inner positions (`inner: true`) must use JS-compatible types (`JsString`, `JsOption<T>`)
+///
+/// Inner positions include:
+/// - Nested inside generic type parameters (e.g., inside `Promise<T>`, `Array<T>`)
+/// - Callback function signatures (since callbacks become `&Function`, types are erased)
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TypePosition {
+    pub direction: Direction,
+    /// Whether this type is nested inside a generic or callback.
+    /// When true, must use JS-compatible types.
+    pub inner: bool,
+}
+
+impl TypePosition {
+    /// Top-level function argument position.
+    pub const ARGUMENT: Self = Self {
+        direction: Direction::Argument,
+        inner: false,
+    };
+
+    /// Top-level function return position.
+    pub const RETURN: Self = Self {
+        direction: Direction::Return,
+        inner: false,
+    };
+
+    /// Convert to inner position (for generic type parameters or callbacks).
+    pub fn to_inner(self) -> Self {
+        Self {
+            direction: self.direction,
+            inner: true,
+        }
+    }
+
+    /// Check if this is an argument position (top-level or inner).
+    pub fn is_argument(self) -> bool {
+        matches!(self.direction, Direction::Argument)
+    }
+
+    /// Check if this is a return position (top-level or inner).
+    pub fn is_return(self) -> bool {
+        matches!(self.direction, Direction::Return)
+    }
 }
 
 impl<'src> FirstPassRecord<'src> {
@@ -233,6 +344,7 @@ impl<'src> FirstPassRecord<'src> {
         data: &'src OperationData<'src>,
         unstable: bool,
         unstable_types: &HashSet<Identifier>,
+        wbg_generic: bool,
     ) -> Vec<InterfaceMethod<'_>> {
         let is_static = data.is_static;
 
@@ -245,13 +357,21 @@ impl<'src> FirstPassRecord<'src> {
         // signature where that and all remaining optional arguments are
         // undefined.
         let mut signatures = Vec::new();
+        let saved_next_unstable = self.options.next_unstable.get();
         for signature in data.signatures.iter() {
+            // Signatures from unstable IDL definitions always use typed generics
+            // for WbgType expansion (callbacks become typed, etc.)
+            // [WbgGeneric] on the definition also opts into typed generics.
+            if unstable || wbg_generic || signature.stability.is_unstable() {
+                self.options.next_unstable.set(true);
+            }
+
             fn pass<'src>(
                 this: &FirstPassRecord<'src>,
                 id: &'src OperationId<'_>,
-                signatures: &mut Vec<(&Signature<'src>, Vec<Option<IdlType<'src>>>)>,
+                signatures: &mut Vec<(&Signature<'src>, Vec<Option<WbgType<'src>>>)>,
                 signature: &'src Signature<'_>,
-                mut idl_args: Vec<Option<IdlType<'src>>>,
+                mut idl_args: Vec<Option<WbgType<'src>>>,
             ) {
                 for (i, arg) in signature.args.iter().enumerate().skip(idl_args.len()) {
                     if arg.optional {
@@ -267,7 +387,7 @@ impl<'src> FirstPassRecord<'src> {
                         }
                     }
 
-                    let idl_type = arg.ty.to_idl_type(this);
+                    let idl_type = arg.ty.to_wbg_type(this);
                     let idl_type = this.maybe_adjust(arg.attributes, idl_type, id);
                     idl_args.push(Some(idl_type));
                 }
@@ -276,15 +396,18 @@ impl<'src> FirstPassRecord<'src> {
 
             let idl_args = Vec::with_capacity(signature.args.len());
             pass(self, id, &mut signatures, signature, idl_args);
+
+            // Restore the original setting
+            self.options.next_unstable.set(saved_next_unstable);
         }
 
         // Next expand all the signatures in `data` into all signatures that
         // we're going to generate. These signatures will be used to determine
         // the names for all the various functions.
-        #[derive(Clone)]
+        #[derive(Clone, PartialEq)]
         struct ExpandedSig<'a> {
             orig: &'a Signature<'a>,
-            args: Vec<Option<IdlType<'a>>>,
+            args: Vec<Option<WbgType<'a>>>,
         }
 
         let mut actual_signatures = Vec::new();
@@ -332,7 +455,6 @@ impl<'src> FirstPassRecord<'src> {
                 }
             }
         }
-
         let (js_name, kind, force_structural, force_throws) = match id {
             // Constructors aren't annotated with `[Throws]` extended attributes
             // (how could they be, since they themselves are extended
@@ -371,37 +493,108 @@ impl<'src> FirstPassRecord<'src> {
             }
         };
 
-        let mut ret = Vec::new();
-        for signature in actual_signatures.iter() {
-            // Ignore signatures with invalid return types
-            //
-            // TODO: overloads probably never change return types, so we should
-            //       do this much earlier to avoid all the above work if
-            //       possible.
-            let ret_ty = signature.orig.ret.to_idl_type(self);
+        // Classify each expanded signature into three categories:
+        //
+        // 1. "stable_only" — from stable IDL, no unstable type args. Always emitted.
+        // 2. "stable_using_unstable_types" — from stable IDL but uses a type defined
+        //    in unstable IDL (e.g. VideoFrame). Gated behind cfg(web_sys_unstable_apis)
+        //    but named as part of the stable expansion since the *method* is stable.
+        // 3. "from_unstable_idl" — the signature itself comes from an unstable IDL file
+        //    (the interface is unstable, or an unstable partial interface overrides a
+        //    stable one). These get their own naming namespace (authoritative override).
+        let mut stable_only_sigs: Vec<usize> = Vec::new();
+        let mut stable_using_unstable_type_sigs: Vec<usize> = Vec::new();
+        let mut from_unstable_idl_sigs: Vec<usize> = Vec::new();
 
+        for (idx, signature) in actual_signatures.iter().enumerate() {
+            let from_unstable_idl = unstable || signature.orig.stability.is_unstable();
+            let has_unstable_type_args = signature.args.iter().any(|arg| {
+                arg.as_ref()
+                    .is_some_and(|arg| is_idl_type_unstable(arg, unstable_types))
+            });
+            match (from_unstable_idl, has_unstable_type_args) {
+                // Unstable
+                (true, _) => from_unstable_idl_sigs.push(idx),
+                // Stable method, unstable args
+                (false, true) => stable_using_unstable_type_sigs.push(idx),
+                // Stable method, stable args
+                (false, false) => stable_only_sigs.push(idx),
+            }
+        }
+
+        // For signatures from the SAME original definition as an "from unstable IDL"
+        // signature, include them in the unstable IDL set too. This handles optional
+        // unstable args: e.g. `read(optional UnstableType x = {})` expands to `read()`
+        // and `read(x)`. `read()` is stable, but it's a sibling of the unstable `read(x)`
+        // (same orig), so it should appear in the unstable IDL set.
+        //
+        // This does NOT apply across different definitions: e.g. stable `put(f64)` and
+        // unstable `put(i32)` come from different definitions, so the stable version is
+        // NOT added to the unstable IDL set.
+        //
+        // Importantly, this sibling promotion only applies to the "from unstable IDL"
+        // category — NOT to "stable using unstable types" (those are stable methods that
+        // merely reference an unstable type, they don't have authoritative overrides).
+        {
+            let unstable_idl_origs: HashSet<&Signature<'_>> = from_unstable_idl_sigs
+                .iter()
+                .map(|&idx| actual_signatures[idx].orig)
+                .collect();
+            for (idx, signature) in actual_signatures.iter().enumerate() {
+                if !from_unstable_idl_sigs.contains(&idx)
+                    && unstable_idl_origs.contains(signature.orig)
+                {
+                    from_unstable_idl_sigs.push(idx);
+                }
+            }
+        }
+
+        fn idl_arguments<'a: 'b, 'b>(
+            args: impl Iterator<Item = (String, &'b WbgType<'a>)>,
+        ) -> Option<Vec<(Ident, WbgType<'a>)>> {
+            let mut output = vec![];
+            for (name, idl_type) in args {
+                if idl_type
+                    .to_syn_type(TypePosition::ARGUMENT, false, true)
+                    .is_err()
+                {
+                    return None;
+                }
+                output.push((rust_ident(&snake_case_ident(&name[..])), idl_type.clone()));
+            }
+            Some(output)
+        }
+
+        fn compute_rust_name<'a>(
+            signature: &ExpandedSig<'a>,
+            disambiguate_against: &[usize],
+            all_signatures: &[ExpandedSig<'a>],
+            js_name: &str,
+        ) -> String {
             let mut rust_name = snake_case_ident(js_name);
             let mut first = true;
+
             for (i, arg) in signature
                 .args
                 .iter()
                 .enumerate()
                 .filter_map(|(i, ty)| ty.as_ref().map(|ty| (i, ty)))
             {
-                // Find out if any other known signature either has the same
-                // name for this argument or a different type for this argument.
                 let mut any_same_name = false;
                 let mut any_different_type = false;
                 let mut any_different = false;
                 let arg_name = signature.orig.args[i].name;
-                for other in actual_signatures.iter() {
-                    if other.orig.args.get(i).map(|s| s.name) == Some(arg_name)
-                        && !ptr::eq(signature, other)
-                    {
+
+                for &other_idx in disambiguate_against.iter() {
+                    let other = &all_signatures[other_idx];
+                    if signature == other {
+                        continue;
+                    }
+                    if other.orig.args.get(i).map(|s| s.name) == Some(arg_name) {
                         any_same_name = true;
                     }
-                    if let Some(Some(other)) = other.args.get(i) {
-                        if other != arg {
+                    if let Some(Some(other_arg)) = other.args.get(i) {
+                        if other_arg != arg {
                             any_different_type = true;
                             any_different = true;
                         }
@@ -410,9 +603,6 @@ impl<'src> FirstPassRecord<'src> {
                     }
                 }
 
-                // If all signatures have the exact same type for this argument,
-                // then there's nothing to disambiguate so we don't modify the
-                // name.
                 if !any_different {
                     continue;
                 }
@@ -423,20 +613,33 @@ impl<'src> FirstPassRecord<'src> {
                     rust_name.push_str("_and_");
                 }
 
-                // If this name of the argument for this signature is unique
-                // then that's a bit more human readable so we include it in the
-                // method name. Otherwise the type name should disambiguate
-                // correctly.
-                //
-                // If any signature's argument has the same name as our argument
-                // then we can't use that if the types are also the same because
-                // otherwise it could be ambiguous.
                 if any_same_name && any_different_type {
                     arg.push_snake_case_name(&mut rust_name);
                 } else {
                     rust_name.push_str(&snake_case_ident(arg_name));
                 }
             }
+
+            rust_name
+        }
+
+        fn create_method<'a>(
+            first_pass: &FirstPassRecord<'a>,
+            signature: &ExpandedSig<'a>,
+            rust_name: &str,
+            js_name: &str,
+            type_name: Option<&str>,
+            kind: &InterfaceMethodKind,
+            id: &OperationId<'_>,
+            is_static: bool,
+            force_structural: bool,
+            force_throws: bool,
+            container_attrs: Option<&ExtendedAttributeList<'_>>,
+            unstable_flag: bool,
+            has_unstable_override: bool,
+            wbg_generic: bool,
+        ) -> Option<InterfaceMethod<'a>> {
+            let ret_ty = signature.orig.ret.to_wbg_type(first_pass);
             let structural =
                 force_structural || is_structural(signature.orig.attrs.as_ref(), container_attrs);
             let catch = force_throws
@@ -452,15 +655,13 @@ impl<'src> FirstPassRecord<'src> {
                         .is_none());
             let deprecated = get_rust_deprecated(signature.orig.attrs);
             let ret_ty = if id == &OperationId::IndexingGetter {
-                // All indexing getters should return optional values (or
-                // otherwise be marked with catch).
                 match ret_ty {
-                    IdlType::Nullable(_) => ret_ty,
+                    WbgType::JsOption(_) => ret_ty,
                     ref ty => {
                         if catch {
                             ret_ty
                         } else {
-                            IdlType::Nullable(Box::new(ty.clone()))
+                            WbgType::JsOption(Box::new(ty.clone()))
                         }
                     }
                 }
@@ -475,29 +676,6 @@ impl<'src> FirstPassRecord<'src> {
                     .map(|arg| arg.variadic)
                     .unwrap_or(false);
 
-            fn idl_arguments<'a: 'b, 'b>(
-                args: impl Iterator<Item = (String, &'b IdlType<'a>)>,
-            ) -> Option<Vec<(Ident, IdlType<'a>, syn::Type)>> {
-                let mut output = vec![];
-
-                for (name, idl_type) in args {
-                    let ty = match idl_type.to_syn_type(TypePosition::Argument, false) {
-                        Ok(ty) => ty.unwrap(),
-                        Err(_) => {
-                            return None;
-                        }
-                    };
-
-                    output.push((
-                        rust_ident(&snake_case_ident(&name[..])),
-                        idl_type.clone(),
-                        ty,
-                    ));
-                }
-
-                Some(output)
-            }
-
             let arguments =
                 idl_arguments(signature.args.iter().zip(&signature.orig.args).filter_map(
                     |(idl_type, orig_arg)| {
@@ -505,97 +683,222 @@ impl<'src> FirstPassRecord<'src> {
                             .as_ref()
                             .map(|idl_type| (orig_arg.name.to_string(), idl_type))
                     },
-                ));
+                ))?;
 
-            // Stable types can have methods that have unstable argument types.
-            // If any of the arguments types are `unstable` then this method is downgraded
-            // to be unstable.
-            let has_unstable_args = signature.args.iter().any(|arg| {
-                arg.as_ref()
-                    .is_some_and(|arg| is_idl_type_unstable(arg, unstable_types))
-            });
-
-            // Use the signature's stability rather than the operation's stability.
-            // This allows stable methods to have unstable overloads (e.g., when a
-            // partial interface in the unstable directory adds a new overload with
-            // unstable argument types to an existing stable method).
-            let unstable = unstable || signature.orig.stability.is_unstable() || has_unstable_args;
-
-            if let Some(arguments) = arguments {
-                if let Ok(ret_ty) = ret_ty.to_syn_type(TypePosition::Return, false) {
-                    let mut rust_name = rust_name.clone();
-
-                    if let Some(map) =
-                        type_name.and_then(|type_name| FIXED_INTERFACES.get(type_name))
-                    {
-                        if let Some(fixed) = map.get(rust_name.as_str()) {
-                            rust_name = fixed.to_string();
-                        }
-                    }
-
-                    ret.push(InterfaceMethod {
-                        name: rust_ident(&rust_name),
-                        js_name: js_name.to_string(),
-                        deprecated: deprecated.clone(),
-                        arguments,
-                        variadic_type: None,
-                        ret_ty,
-                        kind: kind.clone(),
-                        is_static,
-                        structural,
-                        catch,
-                        variadic,
-                        unstable,
-                    });
+            let mut rust_name = rust_name.to_string();
+            if let Some(map) = type_name.and_then(|type_name| FIXED_INTERFACES.get(type_name)) {
+                if let Some(fixed) = map.get(rust_name.as_str()) {
+                    rust_name = fixed.to_string();
                 }
             }
 
-            if !variadic {
-                continue;
-            }
-            let last_idl_type = signature.args[signature.args.len() - 1].as_ref().unwrap();
-            let last_name = signature.orig.args[signature.args.len() - 1].name;
-            for i in 0..=MAX_VARIADIC_ARGUMENTS_COUNT {
-                let arguments = idl_arguments(
-                    signature.args[..signature.args.len() - 1]
-                        .iter()
-                        .zip(&signature.orig.args)
-                        .filter_map(|(idl_type, orig_arg)| {
-                            idl_type
-                                .as_ref()
-                                .map(|idl_type| (orig_arg.name.to_string(), idl_type))
-                        })
-                        .chain((1..=i).map(|j| (format!("{last_name}_{j}"), last_idl_type))),
-                );
+            let variadic_type = if variadic {
+                signature.args.last().and_then(|arg| arg.clone())
+            } else {
+                None
+            };
 
-                if let Some(arguments) = arguments {
-                    if let Ok(ret_ty) = ret_ty.to_syn_type(TypePosition::Return, false) {
-                        let mut rust_name = format!("{}_{i}", &rust_name);
+            Some(InterfaceMethod {
+                name: rust_ident(&rust_name),
+                js_name: js_name.to_string(),
+                deprecated,
+                arguments,
+                variadic_type,
+                ret_wbg_ty: Some(ret_ty),
+                kind: kind.clone(),
+                is_static,
+                structural,
+                catch,
+                variadic,
+                unstable: unstable_flag,
+                has_unstable_override,
+                wbg_generic,
+            })
+        }
 
-                        if let Some(map) =
-                            type_name.and_then(|type_name| FIXED_INTERFACES.get(type_name))
-                        {
-                            if let Some(fixed) = map.get(rust_name.as_str()) {
-                                rust_name = fixed.to_string();
+        // Helper to build a method set from signature indices, with variadic expansion.
+        //
+        // `sig_indices`: the signatures to build methods for.
+        // `disambiguate_against`: the signatures to compare against when computing
+        //   Rust names (may be a superset of `sig_indices`).
+        // `unstable_flag`: whether methods should be gated with cfg(web_sys_unstable_apis).
+        // `deconflict_names`: optional set of names already taken by another expansion
+        //   that these names must not collide with. If a collision is found, a numeric
+        //   suffix is appended.
+        let build_method_set = |sig_indices: &[usize],
+                                disambiguate_against: &[usize],
+                                unstable_flag: bool,
+                                deconflict_names: &HashSet<String>|
+         -> Vec<InterfaceMethod<'_>> {
+            let mut methods = Vec::new();
+            for &sig_idx in sig_indices {
+                let signature = &actual_signatures[sig_idx];
+                let mut rust_name =
+                    compute_rust_name(signature, disambiguate_against, &actual_signatures, js_name);
+
+                // If the computed name collides with a name from another expansion
+                // (e.g. a stable expansion name colliding with an unstable IDL override
+                // name), disambiguate by appending a suffix.
+                if deconflict_names.contains(&rust_name) {
+                    let base = rust_name.clone();
+                    let mut counter = 1u32;
+                    loop {
+                        rust_name = format!("{base}_{counter}");
+                        if !deconflict_names.contains(&rust_name) {
+                            break;
+                        }
+                        counter += 1;
+                    }
+                }
+
+                if let Some(method) = create_method(
+                    self,
+                    signature,
+                    &rust_name,
+                    js_name,
+                    type_name,
+                    &kind,
+                    id,
+                    is_static,
+                    force_structural,
+                    force_throws,
+                    container_attrs,
+                    unstable_flag,
+                    false,
+                    wbg_generic,
+                ) {
+                    methods.push(method.clone());
+
+                    if method.variadic && !self.options.next_unstable.get() {
+                        let last_idl_type = signature.args.last().unwrap().as_ref().unwrap();
+                        let last_name = signature.orig.args.last().unwrap().name;
+                        for i in 0..=MAX_VARIADIC_ARGUMENTS_COUNT {
+                            let arguments = idl_arguments(
+                                signature.args[..signature.args.len() - 1]
+                                    .iter()
+                                    .zip(&signature.orig.args)
+                                    .filter_map(|(idl_type, orig_arg)| {
+                                        idl_type
+                                            .as_ref()
+                                            .map(|idl_type| (orig_arg.name.to_string(), idl_type))
+                                    })
+                                    .chain(
+                                        (1..=i)
+                                            .map(|j| (format!("{last_name}_{j}"), last_idl_type)),
+                                    ),
+                            );
+                            if let Some(arguments) = arguments {
+                                let mut name = format!("{}_{i}", &rust_name);
+                                if let Some(map) = type_name.and_then(|t| FIXED_INTERFACES.get(t)) {
+                                    if let Some(fixed) = map.get(name.as_str()) {
+                                        name = fixed.to_string();
+                                    }
+                                }
+                                methods.push(InterfaceMethod {
+                                    name: rust_ident(&name),
+                                    arguments,
+                                    variadic: false,
+                                    variadic_type: Some(last_idl_type.clone()),
+                                    ..method.clone()
+                                });
                             }
                         }
-
-                        ret.push(InterfaceMethod {
-                            name: rust_ident(&rust_name),
-                            js_name: js_name.to_string(),
-                            deprecated: deprecated.clone(),
-                            arguments,
-                            variadic_type: Some(last_idl_type.clone()),
-                            kind: kind.clone(),
-                            ret_ty,
-                            is_static,
-                            structural,
-                            catch,
-                            variadic: false,
-                            unstable,
-                        });
                     }
                 }
+            }
+            methods
+        };
+
+        let has_unstable_idl_override = !from_unstable_idl_sigs.is_empty();
+        let no_deconflict: HashSet<String> = HashSet::new();
+
+        // The "stable expansion" always includes stable_only + stable_using_unstable_type
+        // signatures. These are all from stable IDL and must be named together so they
+        // disambiguate against each other correctly.
+        let all_stable_expansion_sigs: Vec<usize> = stable_only_sigs
+            .iter()
+            .chain(stable_using_unstable_type_sigs.iter())
+            .copied()
+            .collect();
+
+        // Build the stable expansion methods. Both stable-only and
+        // stable-using-unstable-types are named against the full stable expansion.
+        let stable_only_methods = build_method_set(
+            &stable_only_sigs,
+            &all_stable_expansion_sigs,
+            false,
+            &no_deconflict,
+        );
+        let stable_using_unstable_type_methods = build_method_set(
+            &stable_using_unstable_type_sigs,
+            &all_stable_expansion_sigs,
+            true,
+            &no_deconflict,
+        );
+
+        // Collect all names from the stable expansion for cross-deconflicting with
+        // the unstable IDL override expansion. But EXCLUDE stable names that share
+        // the same JS method name, since those will be gated behind
+        // cfg(not(web_sys_unstable_apis)) and won't coexist with the overrides.
+        let stable_expansion_names_for_deconflict: HashSet<String> = if has_unstable_idl_override {
+            stable_only_methods
+                .iter()
+                .chain(stable_using_unstable_type_methods.iter())
+                .filter(|m| m.js_name != js_name)
+                .map(|m| m.name.to_string())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
+        // Build the unstable IDL override expansion (authoritative overrides).
+        // These get their own naming namespace but deconflict against stable names
+        // (excluding same-JS-name stable methods that will be cfg(not(unstable))).
+        let from_unstable_idl_methods = if has_unstable_idl_override {
+            self.options.next_unstable.set(true);
+            let methods = build_method_set(
+                &from_unstable_idl_sigs,
+                &from_unstable_idl_sigs,
+                true,
+                &stable_expansion_names_for_deconflict,
+            );
+            self.options.next_unstable.set(saved_next_unstable);
+            methods
+        } else {
+            Vec::new()
+        };
+
+        // Now merge everything into the final output.
+
+        // If there's no unstable IDL override, emit stable + unstable-type methods.
+        if !has_unstable_idl_override {
+            let mut ret = stable_only_methods;
+            ret.extend(stable_using_unstable_type_methods);
+            return ret;
+        }
+
+        // There IS an authoritative unstable IDL override.
+        // Stable expansion methods that share a signature with an unstable IDL method
+        // are "merged" (emitted once, no gate). Others get cfg(not(unstable)).
+        let mut ret: Vec<InterfaceMethod<'_>> = Vec::new();
+
+        for mut method in stable_only_methods
+            .into_iter()
+            .chain(stable_using_unstable_type_methods)
+        {
+            let merged = from_unstable_idl_methods
+                .iter()
+                .any(|um| method.same_signature(um));
+            // Merged = in both sets, no gate. Otherwise gate with not(unstable).
+            method.has_unstable_override = !merged;
+            ret.push(method);
+        }
+
+        for method in from_unstable_idl_methods {
+            let merged = ret.iter().any(|sm| sm.same_signature(&method));
+            if !merged {
+                // Only in unstable IDL set - emit with unstable gate
+                ret.push(method);
             }
         }
 
@@ -615,9 +918,9 @@ impl<'src> FirstPassRecord<'src> {
     fn maybe_adjust<'a>(
         &self,
         attributes: &'src Option<ExtendedAttributeList<'src>>,
-        mut idl_type: IdlType<'a>,
+        mut idl_type: WbgType<'a>,
         id: &'a OperationId,
-    ) -> IdlType<'a> {
+    ) -> WbgType<'a> {
         if has_named_attribute(attributes.as_ref(), "AllowShared") {
             flag_slices_allow_shared(&mut idl_type)
         }
@@ -646,9 +949,9 @@ pub fn is_type_unstable(ty: &weedle::types::Type, unstable_types: &HashSet<Ident
     }
 }
 
-fn is_idl_type_unstable(ty: &IdlType, unstable_types: &HashSet<Identifier>) -> bool {
+fn is_idl_type_unstable(ty: &WbgType, unstable_types: &HashSet<Identifier>) -> bool {
     match ty {
-        IdlType::Identifier {
+        WbgType::Identifier {
             ty: IdentifierType::Dictionary(name) | IdentifierType::Interface(name),
             ..
         } => unstable_types.contains(&Identifier(name)),
@@ -683,6 +986,12 @@ fn has_ident_attribute(list: Option<&ExtendedAttributeList>, ident: &str) -> boo
 /// ChromeOnly is for things that are only exposed to privileged code in Firefox.
 pub fn is_chrome_only(ext_attrs: &Option<ExtendedAttributeList>) -> bool {
     has_named_attribute(ext_attrs.as_ref(), "ChromeOnly")
+}
+
+/// Whether a webidl definition is marked with `[WbgGeneric]`, which opts
+/// stable APIs into typed generics (the same signatures that unstable APIs use).
+pub fn is_wbg_generic(ext_attrs: Option<&ExtendedAttributeList>) -> bool {
+    has_named_attribute(ext_attrs, "WbgGeneric")
 }
 
 /// Whether a webidl object is marked as a no interface object.
@@ -731,21 +1040,21 @@ pub fn throws(attrs: &Option<ExtendedAttributeList>) -> bool {
     has_named_attribute(attrs.as_ref(), "Throws")
 }
 
-fn arg_throws(ty: &IdlType<'_>) -> bool {
+fn arg_throws(ty: &WbgType<'_>) -> bool {
     match ty {
-        IdlType::DataView { allow_shared }
-        | IdlType::Int8Array { allow_shared, .. }
-        | IdlType::Uint8Array { allow_shared, .. }
-        | IdlType::Uint8ClampedArray { allow_shared, .. }
-        | IdlType::Int16Array { allow_shared, .. }
-        | IdlType::Uint16Array { allow_shared, .. }
-        | IdlType::Int32Array { allow_shared, .. }
-        | IdlType::Uint32Array { allow_shared, .. }
-        | IdlType::Float32Array { allow_shared, .. }
-        | IdlType::Float64Array { allow_shared, .. }
-        | IdlType::ArrayBufferView { allow_shared, .. }
-        | IdlType::BufferSource { allow_shared, .. }
-        | IdlType::Identifier {
+        WbgType::DataView { allow_shared }
+        | WbgType::Int8Array { allow_shared, .. }
+        | WbgType::Uint8Array { allow_shared, .. }
+        | WbgType::Uint8ClampedArray { allow_shared, .. }
+        | WbgType::Int16Array { allow_shared, .. }
+        | WbgType::Uint16Array { allow_shared, .. }
+        | WbgType::Int32Array { allow_shared, .. }
+        | WbgType::Uint32Array { allow_shared, .. }
+        | WbgType::Float32Array { allow_shared, .. }
+        | WbgType::Float64Array { allow_shared, .. }
+        | WbgType::ArrayBufferView { allow_shared, .. }
+        | WbgType::BufferSource { allow_shared, .. }
+        | WbgType::Identifier {
             ty:
                 IdentifierType::Int8Slice { allow_shared, .. }
                 | IdentifierType::Uint8Slice { allow_shared, .. }
@@ -758,8 +1067,8 @@ fn arg_throws(ty: &IdlType<'_>) -> bool {
                 | IdentifierType::Float64Slice { allow_shared, .. },
             ..
         } => !allow_shared,
-        IdlType::Nullable(item) => arg_throws(item),
-        IdlType::Union(list) => list.iter().any(arg_throws),
+        WbgType::JsOption(item) => arg_throws(item),
+        WbgType::Union(list) => list.iter().any(arg_throws),
         // catch-all for everything else like Object
         _ => false,
     }
@@ -795,25 +1104,25 @@ pub fn setter_throws(
     has_named_attribute(attrs.as_ref(), "SetterThrows")
 }
 
-fn flag_slices_immutable(ty: &mut IdlType) {
+fn flag_slices_immutable(ty: &mut WbgType) {
     match ty {
-        IdlType::Int8Array { immutable, .. }
-        | IdlType::Uint8Array { immutable, .. }
-        | IdlType::Uint8ClampedArray { immutable, .. }
-        | IdlType::Int16Array { immutable, .. }
-        | IdlType::Uint16Array { immutable, .. }
-        | IdlType::Int32Array { immutable, .. }
-        | IdlType::Uint32Array { immutable, .. }
-        | IdlType::Float32Array { immutable, .. }
-        | IdlType::Float64Array { immutable, .. }
-        | IdlType::ArrayBufferView { immutable, .. }
-        | IdlType::BufferSource { immutable, .. }
-        | IdlType::Identifier {
+        WbgType::Int8Array { immutable, .. }
+        | WbgType::Uint8Array { immutable, .. }
+        | WbgType::Uint8ClampedArray { immutable, .. }
+        | WbgType::Int16Array { immutable, .. }
+        | WbgType::Uint16Array { immutable, .. }
+        | WbgType::Int32Array { immutable, .. }
+        | WbgType::Uint32Array { immutable, .. }
+        | WbgType::Float32Array { immutable, .. }
+        | WbgType::Float64Array { immutable, .. }
+        | WbgType::ArrayBufferView { immutable, .. }
+        | WbgType::BufferSource { immutable, .. }
+        | WbgType::Identifier {
             ty: IdentifierType::AllowSharedBufferSource { immutable },
             ..
         } => *immutable = true,
-        IdlType::Nullable(item) => flag_slices_immutable(item),
-        IdlType::Union(list) => {
+        WbgType::JsOption(item) => flag_slices_immutable(item),
+        WbgType::Union(list) => {
             for item in list {
                 flag_slices_immutable(item);
             }
@@ -823,30 +1132,30 @@ fn flag_slices_immutable(ty: &mut IdlType) {
     }
 }
 
-fn flag_slices_allow_shared(ty: &mut IdlType) {
+fn flag_slices_allow_shared(ty: &mut WbgType) {
     match ty {
-        IdlType::DataView { allow_shared }
-        | IdlType::Int8Array { allow_shared, .. }
-        | IdlType::Uint8Array { allow_shared, .. }
-        | IdlType::Uint8ClampedArray { allow_shared, .. }
-        | IdlType::Int16Array { allow_shared, .. }
-        | IdlType::Uint16Array { allow_shared, .. }
-        | IdlType::Int32Array { allow_shared, .. }
-        | IdlType::Uint32Array { allow_shared, .. }
-        | IdlType::Float32Array { allow_shared, .. }
-        | IdlType::Float64Array { allow_shared, .. }
-        | IdlType::ArrayBufferView { allow_shared, .. }
-        | IdlType::BufferSource { allow_shared, .. } => *allow_shared = true,
-        IdlType::Nullable(item) => flag_slices_allow_shared(item),
-        IdlType::FrozenArray(item) => flag_slices_allow_shared(item),
-        IdlType::Sequence(item) => flag_slices_allow_shared(item),
-        IdlType::ObservableArray(item) => flag_slices_allow_shared(item),
-        IdlType::Promise(item) => flag_slices_allow_shared(item),
-        IdlType::Record(item1, item2) => {
+        WbgType::DataView { allow_shared }
+        | WbgType::Int8Array { allow_shared, .. }
+        | WbgType::Uint8Array { allow_shared, .. }
+        | WbgType::Uint8ClampedArray { allow_shared, .. }
+        | WbgType::Int16Array { allow_shared, .. }
+        | WbgType::Uint16Array { allow_shared, .. }
+        | WbgType::Int32Array { allow_shared, .. }
+        | WbgType::Uint32Array { allow_shared, .. }
+        | WbgType::Float32Array { allow_shared, .. }
+        | WbgType::Float64Array { allow_shared, .. }
+        | WbgType::ArrayBufferView { allow_shared, .. }
+        | WbgType::BufferSource { allow_shared, .. } => *allow_shared = true,
+        WbgType::JsOption(item) => flag_slices_allow_shared(item),
+        WbgType::FrozenArray(item) => flag_slices_allow_shared(item),
+        WbgType::Sequence(item) => flag_slices_allow_shared(item),
+        WbgType::ObservableArray(item) => flag_slices_allow_shared(item),
+        WbgType::Promise(item) => flag_slices_allow_shared(item),
+        WbgType::Record(item1, item2) => {
             flag_slices_allow_shared(item1);
             flag_slices_allow_shared(item2);
         }
-        IdlType::Union(list) => {
+        WbgType::Union(list) => {
             for item in list {
                 flag_slices_allow_shared(item);
             }
