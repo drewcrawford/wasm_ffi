@@ -31,6 +31,12 @@
 
 ### Fixed
 
+* Added support for per-operation `[WbgGeneric]` in WebIDL, restoring typed
+  generic return types (e.g. `Promise<ImageBitmap>`) for `createImageBitmap` on
+  `Window` and `WorkerGlobalScope` that were lost after the `VideoFrame`
+  stabilization.
+  [#5026](https://github.com/wasm-bindgen/wasm-bindgen/pull/5026)
+
 * Fixed `JsOption::new()` to use `undefined` instead of `null`, to be compatible with `Option::None` and JS default parameters.
   [#5023](https://github.com/wasm-bindgen/wasm-bindgen/pull/5023)
 
@@ -45,6 +51,10 @@
 * Fixed large test outputs (10MB+) causing oversized WebDriver responses that were either
   extremely slow or crashed completely, by switching to incremental streaming output collection.
   [#4960](https://github.com/wasm-bindgen/wasm-bindgen/pull/4960)
+  
+* Fixed a duplciate wasm export in node ESM atomics, when compiled in debug mode
+  [#5028](https://github.com/wasm-bindgen/wasm-bindgen/pull/5028)
+  
 ### Removed
 
 ## [0.2.114](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.113...0.2.114)
