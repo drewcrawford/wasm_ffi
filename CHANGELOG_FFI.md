@@ -11,7 +11,7 @@ Now doctests are detected and executed properly. Supports:
 - Shared worker (`wasm_bindgen_test_configure!(run_in_shared_worker)`)
 - Service worker (`wasm_bindgen_test_configure!(run_in_service_worker)`)
 
-# node-esm-threads-debug-wasm-export
+# node-esm-threads-debug-wasm-export (UPSTREAMED)
 
 Fix `SyntaxError: Duplicate export of '__wasm'` in Node.js ESM + threads + debug mode.
 
@@ -45,13 +45,13 @@ Improve panic capture from worker threads in browser tests. Panics from dedicate
 
 Shell status messages (e.g., "Loading page elements...") are now suppressed when stdout is not a TTY. This produces cleaner output in CI environments and when piping output.
 
-# worker-logs-capture
+# worker-logs-capture (UPSTREAMED)
 
 Capture console.log/debug/info/warn/error from user-spawned Workers and SharedWorkers in browser tests.
 
 Previously, only console output from the main thread and the test-runner's own worker was captured. Now logs from any worker created by test code are also forwarded to CLI output.
 
-# CI
+# CI (WONTUPSTREAM)
 
 Remove codecov and codspeed CI workflows
 Re-bless with latest nightly
