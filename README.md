@@ -1,54 +1,95 @@
-# Fork manifesto
+# `wasm_ffi`
 
-This is a fork of wasm-bindgen.  Goals:
+`wasm_ffi` is a maintained fork of `wasm-bindgen`. This is not the upstream `wasm-bindgen` repository.
 
-a) high velocity; unblock first, ask questions later
+This fork is aimed at one question: can we build and test a complex, real-world
+Rust/Wasm application and expect the tooling stack to hold together?
 
-b) support "modern" workloads like multicore atomics, log-based debugging, or whatever your browser of choice broke this week.
+That means using real workloads to find the longer tail of bugs that do not
+show up in isolated demos, then fixing the surrounding infrastructure until the
+application is debuggable, testable, and maintainable. Sometimes the failure is
+obvious. Sometimes it is a chicken-and-egg problem where logging, tests, or
+other debugging tools are themselves part of what is broken.
 
-c) more predictable crates.io release schedule
+This approach has already produced many upstreamed fixes to wasm-bindgen in areas like worker
+log capture, realtime headless output, Node.js thread support, duplicate
+`__wasm` exports in debug builds, and major logging-performance improvements.
+This fork also actively tracks upstream `wasm-bindgen` and regularly pulls in
+upstream changes. That keeps the fork close to the broader ecosystem while
+leaving room to ship and maintain work here when the upstream path is slower or
+less predictable than the engineering work itself.
 
-d) landing pad for things we'd all like in wasm-bindgen, but may benefit from incubation inside a higher-velocity fork
+One particularly deep feature unique to this fork is working doctest support.
+Doctests are widely and incorrectly believed to work in `wasm-bindgen`; this fork is where they actually run.
 
-e) identical license with both wasm-bindgen, and also rust. So legally any code could flow both to wasm-bindgen, and subsequently, to rust itself.
+For more details on features developed in this fork and their upstreamed status, see CHANGELOG_FFI.md.
 
-## Sunset
+## Using wasm_ffi
 
-This fork will have at least three monthly releases:
+### Why `patch.crates-io` instead of a separate crates.io release?
 
-1.x - January 2026
+Because the `wasm-bindgen` crates are tightly version-coupled and effectively
+need to appear as one coherent family in a dependency graph, `patch.crates-io`
+works better than trying to publish a parallel crate family.
 
+If your project already depends on crates from the `wasm-bindgen` family, the
+simplest way to try this fork is to patch those crates at your workspace root:
 
-2.x - February 2026
+```toml
+[patch.crates-io]
+js-sys = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+wasm-bindgen = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+wasm-bindgen-futures = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+wasm-bindgen-macro = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+wasm-bindgen-macro-support = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+wasm-bindgen-shared = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+wasm-bindgen-test = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+wasm-bindgen-test-macro = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+wasm-bindgen-test-shared = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+web-sys = { git = "https://github.com/drewcrawford/wasm_ffi", branch = "main" }
+```
 
-3.x - March 2026, assuming breaking changes are needed
+If you want something more stable than the moving `main` branch, replace
+`branch = "main"` with a specific tag or revision:
 
-In April, we'll see if upstream has merged our patches or if we need to order another quarter of releases.
+```toml
+[patch.crates-io]
+wasm-bindgen = { git = "https://github.com/drewcrawford/wasm_ffi", tag = "v3.0" }
+web-sys = { git = "https://github.com/drewcrawford/wasm_ffi", rev = "0123456789abcdef0123456789abcdef01234567" }
+```
 
-# SLA
+In practice you should pin the whole `wasm-bindgen` family to the same branch,
+tag, or revision.
 
-This fork will release one new major version every month, in the first week of that month.  (Or a minor version, if no breaking changes were submitted.)
+Because `wasm-bindgen` lacks a stable ABI, install the associated CLI from this
+fork as a matched pair:
 
-During the first week of a month I will update [my crates](https://crates.io/users/drewcrawford) to target the new release.
+```sh
+cargo install wasm-bindgen-cli --git https://github.com/drewcrawford/wasm_ffi --branch main
+```
 
-In addition I will rapidly fire point releases as soon as possible.
+Likewise, you can install a specific release or commit:
 
-## PR SLA
+```sh
+cargo install wasm-bindgen-cli --git https://github.com/drewcrawford/wasm_ffi --tag v3.0
+cargo install wasm-bindgen-cli --git https://github.com/drewcrawford/wasm_ffi --rev 0123456789abcdef0123456789abcdef01234567
+```
 
-Obviously, try upstream first or in parallel.  If you're reading this, you might be somehow disillusioned on that path.
+## Contributing To This Fork
 
-If you send me a PR that seems to pass CI and merge cleanly, I guarantee that I will merge it.  In case you don't want your actual feature to get broken later, consider writing better automated tests, which would benefit everybody.
+Consider upstream first. This fork actively tracks `wasm-bindgen`, so upstream improvements are likely to flow here as well.
 
-For non-breaking changes, this will likely be the fastest review process you'll ever encounter.
+If you want to open a PR here instead, the most useful cases are:
 
-For breaking changes, the merge window will be the last week of each month, when the monthly breakage has been scheduled. Review criteria will be similar, if it appears to pass CI I will try to merge it in that window.
+- situations that for a clear reason are difficult to upstream cleanly
+- test cases from real applications
+- fixes for debugging, logging, worker, or packaging failures
+- improvements that make complex Rust/Wasm workloads actually work end-to-end
 
-On some roughly monthly cadence I will attempt to merge upstream's changes.  But they've [failed my CI tests](https://github.com/wasm-bindgen/wasm-bindgen/pull/4875#issuecomment-3675267028) for over a week now, so I guess we'll see how that goes.
+Below is the standard `wasm-bindgen` README, kept as intact as possible to
+simplify future merges from upstream.
 
 ---
-
-# Original wasm-bindgen README
-
 <div align="center">
 
   <h1><code>wasm-bindgen</code></h1>
