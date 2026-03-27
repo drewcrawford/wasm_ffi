@@ -5,6 +5,30 @@
 
 ### Added
 
+* `console.debug/log/info/warn/error` output from user-spawned `Worker` and
+  `SharedWorker` instances is now forwarded to the CLI test runner during
+  headless browser tests, just like output from the main thread. Works for
+  blob URL workers, module workers, URL-based workers (importScripts), nested
+  workers, and shared workers (including logs emitted before the first port
+  connection). Non-cloneable arguments are serialized via `String()` rather
+  than crashing the worker. The `--nocapture` flag is respected.
+  [#5037](https://github.com/wasm-bindgen/wasm-bindgen/pull/5037)
+
+* `js_sys::Promise<T>` now implements `IntoFuture`, enabling direct `.await` on
+  any JS promise without a wrapper type. The `wasm-bindgen-futures` implementation
+  has been moved into `js-sys` behind an optional `futures` feature, which is
+  activated automatically when `wasm-bindgen-futures` is a dependency. All
+  existing `wasm_bindgen_futures::*` import paths continue to work unchanged via
+  re-exports. `js_sys::futures` is also available directly for users who want
+  `promise.await` without depending on `wasm-bindgen-futures`.
+  [#5049](https://github.com/wasm-bindgen/wasm-bindgen/pull/5049)
+
+* Added `--target emscripten` support, generating a `library_bindgen.js` file
+  for consumption by Emscripten at link time. Includes support for futures,
+  JS closures, and TypeScript output. A new Emscripten-specific test runner is
+  also included, along with CI integration.
+  [#4443](https://github.com/wasm-bindgen/wasm-bindgen/pull/4443)
+
 * Added `VideoFrame`, `VideoColorSpace`, and related WebCodecs dictionaries/enums to `web-sys`.
   [#5008](https://github.com/wasm-bindgen/wasm-bindgen/pull/5008)
 
@@ -29,7 +53,14 @@
   headless test runner. The main branch cannot complete this benchmark at any volume.
   [#4960](https://github.com/wasm-bindgen/wasm-bindgen/pull/4960)
 
+* Updated to Walrus 0.26
+  [#5057](https://github.com/wasm-bindgen/walrus/pull/5057)
+
 ### Fixed
+
+* Fixed argument order when calling multi-parameter functions in the
+  `wasm-bindgen` interpreter by reversing the args collected from the stack.
+  [#5047](https://github.com/wasm-bindgen/wasm-bindgen/pull/5047)
 
 * Added support for per-operation `[WbgGeneric]` in WebIDL, restoring typed
   generic return types (e.g. `Promise<ImageBitmap>`) for `createImageBitmap` on
@@ -37,8 +68,19 @@
   stabilization.
   [#5026](https://github.com/wasm-bindgen/wasm-bindgen/pull/5026)
 
+* Fixed missing `#[cfg(feature = "...")]` gates on deprecated dictionary builder
+  methods and getters for union-typed fields (e.g. `{Open,Save,Directory}FilePickerOptions::start_in()`),
+  and fixed per-setter doc requirements to list each setter's own required features.
+  [#5039](https://github.com/wasm-bindgen/wasm-bindgen/pull/5039)
+
 * Fixed `JsOption::new()` to use `undefined` instead of `null`, to be compatible with `Option::None` and JS default parameters.
   [#5023](https://github.com/wasm-bindgen/wasm-bindgen/pull/5023)
+
+* Fixed unsound `unsafe` transmutes in `JsOption<T>::wrap`, `as_option`, and `into_option`
+  by replacing `transmute_copy` with `unchecked_into()`. Also tightened the `JsGeneric`
+  trait bound and `JsOption<T>` impl block to require `T: JsGeneric` (which implies `JsCast`),
+  preventing use with arbitrary non-JS types.
+  [#5030](https://github.com/wasm-bindgen/wasm-bindgen/pull/5030)
 
 * Fixed headless test runner emitting `\r` carriage-return sequences in non-TTY environments,
   which polluted captured logs in CI and complicated output-matching tests.
@@ -54,7 +96,20 @@
   
 * Fixed a duplciate wasm export in node ESM atomics, when compiled in debug mode
   [#5028](https://github.com/wasm-bindgen/wasm-bindgen/pull/5028)
-  
+
+* Fixed a type inference regression (`E0283: type annotations needed`) introduced
+  in v0.2.109 where the stable `FromIterator` and `Extend` impls on `js_sys::Array`
+  were changed from `A: AsRef<JsValue>` to `A: AsRef<T>`. Because `#[wasm_bindgen]`
+  generates multiple `AsRef` impls per type, the compiler could not uniquely resolve
+  `T`, breaking code like `Array::from_iter([my_wasm_value])` without explicit
+  annotations. The stable impls are restored to `A: AsRef<JsValue>` (returning
+  `Array<JsValue>`); the generic `A: AsRef<T>` forms remain available under
+  `js_sys_unstable_apis`.
+  [#5052](https://github.com/wasm-bindgen/wasm-bindgen/pull/5052)
+
+* Fixed `skip_typescript` not being respected when using `reexport`, causing
+  TypeScript definitions to be incorrectly emitted for re-exported items marked
+  with `#[wasm_bindgen(skip_typescript)]`.
 ### Removed
 
 ## [0.2.114](https://github.com/wasm-bindgen/wasm-bindgen/compare/0.2.113...0.2.114)

@@ -130,10 +130,15 @@ where
 }
 
 fn rmain(cli: Cli) -> anyhow::Result<()> {
-    // Collect all tests that the test harness is supposed to run. We assume
-    // that any exported function with the prefix `__wbg_test` is a test we need
-    // to execute.
-    let wasm = fs::read(&cli.file).context("failed to read Wasm file")?;
+    let mut file_name_buf = cli.file.clone();
+
+    // Repoint the file to be read from "name.js" to "name.wasm" in the case of emscripten.
+    // Rustc generates a .js and a .wasm file when targeting emscripten. It lists the .js
+    // file as the primary executor which is inconsitent with what is expected here.
+    if file_name_buf.extension().unwrap_or_default() == "js" {
+        file_name_buf.set_extension("wasm");
+    }
+    let wasm = fs::read(file_name_buf).context("failed to read Wasm file")?;
     let mut wasm = walrus::ModuleConfig::new()
         // generate dwarf by default, it can be controlled by debug profile
         //
@@ -276,6 +281,7 @@ fn rmain(cli: Cli) -> anyhow::Result<()> {
             no_modules: service_worker_no_modules,
         },
         Some(section) if section.data.contains(&0x05) => TestMode::Node { no_modules },
+        Some(section) if section.data.contains(&0x06) => TestMode::Emscripten {},
         Some(_) => bail!("invalid __wasm_bindgen_test_unstable value"),
         None => {
             let mut modes = Vec::new();
@@ -366,7 +372,8 @@ fn rmain(cli: Cli) -> anyhow::Result<()> {
         TestMode::Browser { .. }
         | TestMode::DedicatedWorker { .. }
         | TestMode::SharedWorker { .. }
-        | TestMode::ServiceWorker { .. } => {
+        | TestMode::ServiceWorker { .. }
+        | TestMode::Emscripten => {
             if test_mode.no_modules() {
                 b.no_modules(true)?
             } else {
@@ -432,11 +439,6 @@ fn rmain(cli: Cli) -> anyhow::Result<()> {
             TestMode::DedicatedWorker { no_modules }
                 if env::var("WASM_BINDGEN_USE_BROWSER").is_err() =>
             {
-                // DedicatedWorker mode without explicit browser request: use Node.js worker thread
-                // This allows doctests with `wasm_bindgen_test_configure!(run_in_dedicated_worker)`
-                // to work in Node.js, enabling Atomics.wait and child worker spawning.
-                //
-                // To use browser worker instead, set WASM_BINDGEN_USE_BROWSER=1
                 println!("running 1 doctest (node worker)");
                 if use_fallback {
                     bail!(
@@ -458,11 +460,53 @@ fn rmain(cli: Cli) -> anyhow::Result<()> {
                 println!("running 1 doctest");
                 doctest::execute_deno(module, &tmpdir_path)?;
             }
+            TestMode::Emscripten => {
+                if use_fallback {
+                    bail!(
+                        "This doctest cannot be processed by wasm-bindgen. \
+                         Emscripten fallback execution is not yet implemented. \
+                         Consider adding `wasm_bindgen_test` imports to enable full support."
+                    );
+                }
+                println!("running 1 doctest");
+                let srv = server::spawn_emscripten(
+                    &if headless {
+                        "127.0.0.1:0".parse().unwrap()
+                    } else if let Ok(address) = std::env::var("WASM_BINDGEN_TEST_ADDRESS") {
+                        address.parse().unwrap()
+                    } else {
+                        "127.0.0.1:8000".parse().unwrap()
+                    },
+                    &tmpdir_path,
+                    std::env::var("WASM_BINDGEN_TEST_NO_ORIGIN_ISOLATION").is_err(),
+                )
+                .context("failed to spawn server")?;
+                let addr = srv.server_addr();
+
+                if !headless {
+                    println!("Interactive doctest is now available at http://{addr}");
+                    println!();
+                    println!("Note that interactive mode is enabled because `NO_HEADLESS`");
+                    println!("is specified in the environment of this process. Once you're");
+                    println!("done with testing you'll need to kill this server with");
+                    println!("Ctrl-C.");
+                    srv.run();
+                    return Ok(());
+                }
+
+                thread::spawn(|| srv.run());
+                headless::run(
+                    &addr,
+                    &shell,
+                    driver_timeout,
+                    browser_timeout,
+                    cli.nocapture,
+                )?;
+            }
             TestMode::Browser { .. }
             | TestMode::DedicatedWorker { .. }
             | TestMode::SharedWorker { .. }
             | TestMode::ServiceWorker { .. } => {
-                // Browser fallback not yet implemented
                 if use_fallback {
                     bail!(
                         "This doctest cannot be processed by wasm-bindgen. \
@@ -500,21 +544,61 @@ fn rmain(cli: Cli) -> anyhow::Result<()> {
                 }
 
                 thread::spawn(|| srv.run());
-                headless::run(&addr, &shell, driver_timeout, browser_timeout)?;
+                headless::run(
+                    &addr,
+                    &shell,
+                    driver_timeout,
+                    browser_timeout,
+                    cli.nocapture,
+                )?;
             }
         }
     } else {
-        // For non-doctests, wasm-bindgen must succeed
         bindgen_result.context("executing `wasm-bindgen` over the Wasm file")?;
         match test_mode {
             TestMode::Node { no_modules } => {
                 node::execute(module, &tmpdir_path, cli, tests, !no_modules, benchmark)?
             }
             TestMode::Deno => deno::execute(module, &tmpdir_path, cli, tests)?,
+            TestMode::Emscripten => {
+                let srv = server::spawn_emscripten(
+                    &if headless {
+                        "127.0.0.1:0".parse().unwrap()
+                    } else if let Ok(address) = std::env::var("WASM_BINDGEN_TEST_ADDRESS") {
+                        address.parse().unwrap()
+                    } else {
+                        "127.0.0.1:8000".parse().unwrap()
+                    },
+                    &tmpdir_path,
+                    std::env::var("WASM_BINDGEN_TEST_NO_ORIGIN_ISOLATION").is_err(),
+                )
+                .context("failed to spawn server")?;
+                let addr = srv.server_addr();
+                if !headless {
+                    println!("Interactive browsers tests are now available at http://{addr}");
+                    println!();
+                    println!("Note that interactive mode is enabled because `NO_HEADLESS`");
+                    println!("is specified in the environment of this process. Once you're");
+                    println!("done with testing you'll need to kill this server with");
+                    println!("Ctrl-C.");
+                    srv.run();
+                    return Ok(());
+                }
+                println!("Tests are now available at http://{addr}");
+                thread::spawn(|| srv.run());
+                headless::run(
+                    &addr,
+                    &shell,
+                    driver_timeout,
+                    browser_timeout,
+                    cli.nocapture,
+                )?;
+            }
             TestMode::Browser { .. }
             | TestMode::DedicatedWorker { .. }
             | TestMode::SharedWorker { .. }
             | TestMode::ServiceWorker { .. } => {
+                let nocapture = cli.nocapture;
                 let srv = server::spawn(
                     &if headless {
                         "127.0.0.1:0".parse().unwrap()
@@ -535,8 +619,6 @@ fn rmain(cli: Cli) -> anyhow::Result<()> {
                 .context("failed to spawn server")?;
                 let addr = srv.server_addr();
 
-                // TODO: eventually we should provide the ability to exit at some point
-                // (gracefully) here, but for now this just runs forever.
                 if !headless {
                     println!("Interactive browsers tests are now available at http://{addr}");
                     println!();
@@ -549,7 +631,7 @@ fn rmain(cli: Cli) -> anyhow::Result<()> {
                 }
 
                 thread::spawn(|| srv.run());
-                headless::run(&addr, &shell, driver_timeout, browser_timeout)?;
+                headless::run(&addr, &shell, driver_timeout, browser_timeout, nocapture)?;
             }
         }
     }
@@ -564,6 +646,7 @@ enum TestMode {
     DedicatedWorker { no_modules: bool },
     SharedWorker { no_modules: bool },
     ServiceWorker { no_modules: bool },
+    Emscripten,
 }
 
 impl TestMode {
@@ -576,7 +659,7 @@ impl TestMode {
 
     fn no_modules(self) -> bool {
         match self {
-            Self::Deno => true,
+            Self::Deno | Self::Emscripten => true,
             Self::Browser { no_modules }
             | Self::Node { no_modules }
             | Self::DedicatedWorker { no_modules }
@@ -593,6 +676,7 @@ impl TestMode {
             TestMode::DedicatedWorker { .. } => "WASM_BINDGEN_USE_DEDICATED_WORKER",
             TestMode::SharedWorker { .. } => "WASM_BINDGEN_USE_SHARED_WORKER",
             TestMode::ServiceWorker { .. } => "WASM_BINDGEN_USE_SERVICE_WORKER",
+            TestMode::Emscripten => "WASM_BINDGEN_USE_EMSCRIPTEN",
         }
     }
 }
